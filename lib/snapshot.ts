@@ -6,8 +6,6 @@
  * Always returns a valid Snapshot — never throws into the page.
  */
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { PERIOD_KEYS, PeriodKey, PeriodMetrics, Snapshot } from "./sync/types";
 import { REPS, REP_OWNER_IDS } from "../config/reps";
 
@@ -64,9 +62,10 @@ async function loadFromBlob(): Promise<Snapshot | null> {
 
 async function loadFromFile(): Promise<Snapshot | null> {
   try {
-    const p = path.join(process.cwd(), "data", "snapshot.json");
-    const raw = await readFile(p, "utf8");
-    return JSON.parse(raw) as Snapshot;
+    // Static import so Next.js bundles the JSON into the serverless function
+    // (a runtime fs path would be missed by output-file-tracing on Vercel).
+    const mod = await import("../data/snapshot.json");
+    return ((mod as { default?: Snapshot }).default ?? (mod as unknown)) as Snapshot;
   } catch {
     return null;
   }
