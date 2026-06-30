@@ -74,19 +74,36 @@ async function batchReadAssociations(
   return map;
 }
 
+interface ObjResp {
+  results?: { id: string; properties?: Record<string, string | null> }[];
+}
+
 /** Resolve names for a set of company ids via v3 objects batch read. */
 async function resolveCompanyNames(companyIds: string[]): Promise<Record<string, string>> {
   const names: Record<string, string> = {};
   if (companyIds.length === 0) return names;
-
-  interface ObjResp {
-    results?: { id: string; properties?: Record<string, string | null> }[];
-  }
   for (const ids of chunk(companyIds, OBJ_BATCH)) {
     const body = { properties: ["name"], inputs: ids.map((id) => ({ id })) };
     const res = await hubspotPost<ObjResp>(`/crm/v3/objects/companies/batch/read`, body);
     for (const r of res.results ?? []) {
       names[r.id] = r.properties?.name?.trim() || `Company ${r.id}`;
+    }
+    await delay(RATE_LIMIT_DELAY_MS);
+  }
+  return names;
+}
+
+/** Resolve display names for contacts via v3 objects batch read. */
+async function resolveContactNames(contactIds: string[]): Promise<Record<string, string>> {
+  const names: Record<string, string> = {};
+  if (contactIds.length === 0) return names;
+  for (const ids of chunk(contactIds, OBJ_BATCH)) {
+    const body = { properties: ["firstname", "lastname", "email"], inputs: ids.map((id) => ({ id })) };
+    const res = await hubspotPost<ObjResp>(`/crm/v3/objects/contacts/batch/read`, body);
+    for (const r of res.results ?? []) {
+      const p = r.properties ?? {};
+      const full = [p.firstname, p.lastname].filter(Boolean).join(" ").trim();
+      names[r.id] = full || p.email?.trim() || `Contact ${r.id}`;
     }
     await delay(RATE_LIMIT_DELAY_MS);
   }
@@ -102,6 +119,7 @@ function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
 export interface ResolveResult {
   activities: Activity[];
   companyNames: Record<string, string>;
+  contactNames: Record<string, string>;
 }
 
 export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveResult> {
@@ -178,5 +196,8 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
   console.log(`Resolving ${usedCompanyIds.size} company names…`);
   const companyNames = await resolveCompanyNames([...usedCompanyIds]);
 
-  return { activities, companyNames };
+  console.log(`Resolving ${allContactIds.size} contact names…`);
+  const contactNames = await resolveContactNames([...allContactIds]);
+
+  return { activities, companyNames, contactNames };
 }

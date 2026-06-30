@@ -30,7 +30,14 @@ describe("aggregate", () => {
     act({ type: "email", emailStatus: "SENT", contactIds: ["A"], companyIds: ["X"] }),
     act({ type: "call", disposition: BUSY, contactIds: ["B"], companyIds: ["X"] }),
   ];
-  const snap = aggregate(activities, { X: "Acme" }, ctx, NOW, { calls: true, emails: true });
+  const snap = aggregate(
+    activities,
+    { X: "Acme" },
+    { A: "Alice Smith", B: "Bob Jones" },
+    ctx,
+    NOW,
+    { calls: true, emails: true },
+  );
   const today = snap.reps[REP].periods.today;
 
   it("counts unique contacts and companies", () => {
@@ -60,10 +67,22 @@ describe("aggregate", () => {
     expect(today.channel_mix.email_only).toBe(0);
   });
 
-  it("includes a per-company breakdown for narrow periods", () => {
+  it("includes a per-company breakdown with named contacts for narrow periods", () => {
     expect(today.company_breakdown).toBeDefined();
     expect(today.company_breakdown).toHaveLength(1);
     expect(today.company_breakdown![0]).toMatchObject({ name: "Acme", contacts: 2, calls: 2, emails: 1 });
+    const names = today.company_breakdown![0].contacts_list?.map((c) => c.name).sort();
+    expect(names).toEqual(["Alice Smith", "Bob Jones"]);
+  });
+
+  it("builds a daily series spanning the window", () => {
+    const daily = snap.reps[REP].daily;
+    expect(daily.length).toBeGreaterThan(0);
+    const todayPoint = daily[daily.length - 1];
+    expect(todayPoint.date).toBe("2026-06-29");
+    expect(todayPoint.calls).toBe(2);
+    expect(todayPoint.connected).toBe(1);
+    expect(todayPoint.emails).toBe(1);
   });
 
   it("initializes every tracked rep, even with no activity", () => {

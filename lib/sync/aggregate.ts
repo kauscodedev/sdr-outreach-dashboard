@@ -9,9 +9,10 @@
 
 import { REPS, REP_OWNER_IDS } from "../../config/reps";
 import { isConnected, dispositionLabel } from "../../config/dispositions";
-import { IstContext, periodsForActivity } from "./buckets";
+import { IstContext, periodsForActivity, istDateStr, IST_OFFSET_MS } from "./buckets";
 import {
   Activity,
+  DailyPoint,
   PERIOD_KEYS,
   NARROW_PERIODS,
   PeriodKey,
@@ -19,6 +20,8 @@ import {
   RepData,
   Snapshot,
 } from "./types";
+
+const DAY_MS = 86_400_000;
 
 interface Acc {
   contactChannels: Map<string, { call: boolean; email: boolean }>;
@@ -84,7 +87,12 @@ function round(n: number, dp = 2): number {
   return Math.round(n * f) / f;
 }
 
-function finalize(acc: Acc, period: PeriodKey, companyNames: Record<string, string>): PeriodMetrics {
+function finalize(
+  acc: Acc,
+  period: PeriodKey,
+  companyNames: Record<string, string>,
+  contactNames: Record<string, string>,
+): PeriodMetrics {
   // Channel mix over touched contacts.
   let callOnly = 0;
   let emailOnly = 0;
@@ -139,6 +147,10 @@ function finalize(acc: Acc, period: PeriodKey, companyNames: Record<string, stri
         contacts: stat.contacts.size,
         calls: stat.calls,
         emails: stat.emails,
+        contacts_list: [...stat.contacts].map((cid) => ({
+          id: cid,
+          name: contactNames[cid] ?? `Contact ${cid}`,
+        })),
       }))
       .sort((a, b) => b.calls + b.emails - (a.calls + a.emails));
   }
@@ -149,16 +161,20 @@ function finalize(acc: Acc, period: PeriodKey, companyNames: Record<string, stri
 export function aggregate(
   activities: Activity[],
   companyNames: Record<string, string>,
+  contactNames: Record<string, string>,
   ctx: IstContext,
   generatedAtMs: number,
   sources: { calls: boolean; emails: boolean },
 ): Snapshot {
   // rep -> period -> Acc, pre-initialized for all tracked reps.
   const accs = new Map<string, Map<PeriodKey, Acc>>();
+  // rep -> IST date -> daily counts.
+  const dailyAcc = new Map<string, Map<string, { calls: number; connected: number; emails: number }>>();
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = new Map<PeriodKey, Acc>();
     for (const p of PERIOD_KEYS) byPeriod.set(p, newAcc());
     accs.set(ownerId, byPeriod);
+    dailyAcc.set(ownerId, new Map());
   }
 
   let totalCalls = 0;
@@ -171,14 +187,39 @@ export function aggregate(
     for (const period of periodsForActivity(a.timestampMs, ctx)) {
       applyActivity(byPeriod.get(period)!, a);
     }
+    // Daily series (one bucket per IST day, independent of the period buckets).
+    const day = istDateStr(a.timestampMs);
+    const dmap = dailyAcc.get(a.ownerId)!;
+    const d = dmap.get(day) ?? { calls: 0, connected: 0, emails: 0 };
+    if (a.type === "call") {
+      d.calls++;
+      if (a.disposition && isConnected(a.disposition)) d.connected++;
+    } else {
+      d.emails++;
+    }
+    dmap.set(day, d);
+  }
+
+  // Enumerate every IST day in the window so the trend chart has no gaps.
+  const startIdx = Math.floor((ctx.windowStartMs + IST_OFFSET_MS) / DAY_MS);
+  const windowDates: string[] = [];
+  for (let di = startIdx; di <= ctx.todayIndex; di++) {
+    windowDates.push(istDateStr(di * DAY_MS - IST_OFFSET_MS));
   }
 
   const reps: Record<string, RepData> = {};
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = accs.get(ownerId)!;
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
-    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames);
-    reps[ownerId] = { periods };
+    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, contactNames);
+
+    const dmap = dailyAcc.get(ownerId)!;
+    const daily: DailyPoint[] = windowDates.map((date) => {
+      const d = dmap.get(date) ?? { calls: 0, connected: 0, emails: 0 };
+      return { date, calls: d.calls, connected: d.connected, emails: d.emails };
+    });
+
+    reps[ownerId] = { periods, daily };
   }
 
   const windowDays = Math.round((ctx.nowMs - ctx.windowStartMs) / 86_400_000);

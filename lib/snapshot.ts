@@ -27,7 +27,7 @@ export function emptySnapshot(): Snapshot {
   for (const id of REP_OWNER_IDS) {
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
     for (const p of PERIOD_KEYS) periods[p] = emptyMetrics();
-    reps[id] = { periods };
+    reps[id] = { periods, daily: [] };
   }
   return {
     generated_at_utc: "",
@@ -64,8 +64,8 @@ async function loadFromFile(): Promise<Snapshot | null> {
   try {
     // Static import so Next.js bundles the JSON into the serverless function
     // (a runtime fs path would be missed by output-file-tracing on Vercel).
-    const mod = await import("../data/snapshot.json");
-    return ((mod as { default?: Snapshot }).default ?? (mod as unknown)) as Snapshot;
+    const mod = (await import("../data/snapshot.json")) as unknown as { default?: Snapshot };
+    return (mod.default ?? (mod as unknown)) as Snapshot;
   } catch {
     return null;
   }

@@ -58,11 +58,25 @@ export interface ChannelMix {
   both: number;
 }
 
+export interface ContactRef {
+  id: string;
+  name: string;
+}
+
 export interface CompanyBreakdownRow {
   id: string;
   name: string;
   contacts: number;
   calls: number;
+  emails: number;
+  contacts_list?: ContactRef[]; // who, with HubSpot record links (narrow periods)
+}
+
+/** One IST calendar day of a rep's activity — for the per-rep trend chart. */
+export interface DailyPoint {
+  date: string; // YYYY-MM-DD (IST)
+  calls: number;
+  connected: number;
   emails: number;
 }
 
@@ -80,6 +94,7 @@ export interface PeriodMetrics {
 
 export interface RepData {
   periods: Record<PeriodKey, PeriodMetrics>;
+  daily: DailyPoint[]; // one point per IST day in the window
 }
 
 export interface Snapshot {
