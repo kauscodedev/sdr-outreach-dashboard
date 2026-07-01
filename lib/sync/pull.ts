@@ -153,6 +153,11 @@ export interface OwnedCompany {
   id: string;
   name: string;
   lifecycle: string | null; // raw lifecyclestage value
+  gdId: string | null; // gd_id — rooftop → Group Dealership key
+  isGroup: boolean; // is_this_is_a_part_of_group_dealership_ === "true"
+  groupName: string | null; // dealership_group_name (human label)
+  segment: string | null; // market_segment (size bucket)
+  dealershipType: string | null; // type_of_dealership (Franchise / Independent)
 }
 
 /**
@@ -171,7 +176,11 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
       const body: Record<string, unknown> = {
         filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }] }],
         sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
-        properties: ["name", "lifecyclestage"],
+        properties: [
+          "name", "lifecyclestage", "gd_id",
+          "is_this_is_a_part_of_group_dealership_", "dealership_group_name",
+          "market_segment", "type_of_dealership",
+        ],
         limit: 100,
       };
       if (after) body.after = after;
@@ -181,6 +190,11 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
           id: r.id,
           name: r.properties.name?.trim() || `Company ${r.id}`,
           lifecycle: r.properties.lifecyclestage ?? null,
+          gdId: r.properties.gd_id?.trim() || null,
+          isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
+          groupName: r.properties.dealership_group_name?.trim() || null,
+          segment: r.properties.market_segment?.trim() || null,
+          dealershipType: r.properties.type_of_dealership?.trim() || null,
         });
       }
       after = res.paging?.next?.after;

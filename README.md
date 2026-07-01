@@ -2,7 +2,7 @@
 
 Tracks **outbound** outreach by a fixed set of SDRs from HubSpot — how many **unique
 contacts** and **unique companies** each rep tapped, how deep they went per company,
-and the full call-outcome + email breakdown — across IST time windows
+and the full call-outcome + email breakdown — across US/Eastern time windows
 (Today / Yesterday / Last 3 days / This week / Last week / This month).
 
 Built to answer one question for sales leadership: **are all accounts being tapped?**
@@ -13,7 +13,7 @@ Built to answer one question for sales leadership: **are all accounts being tapp
 scripts/sync.ts ──▶ HubSpot (calls + emails search, v4 batch associations)
        │            weekly-sliced pull (beats the 10k Search ceiling)
        ▼
-  data/snapshot.json  (compact per-rep × per-period aggregates)
+  data/snapshot.json  (compact per-rep × per-period aggregates + cumulative book coverage)
        │            (also uploaded to Vercel Blob if BLOB_READ_WRITE_TOKEN is set)
        ▼
   Next.js app (app/page.tsx → components/Dashboard.tsx)
@@ -26,11 +26,16 @@ sync can exceed serverless time limits.
 ## Key definitions
 
 - **Outbound only:** `hs_call_direction=OUTBOUND`, `hs_email_direction=EMAIL`.
-- **IST boundaries:** fixed UTC+5:30; weeks start **Monday**.
+- **US/Eastern boundaries:** day/week windows are US/Eastern civil midnight (the HubSpot portal's
+  own timezone), DST-aware via `Intl` — **not** a fixed offset; weeks start **Monday**.
 - **Connected:** a human was reached. Voicemail / live message / busy count as **not
   connected** (matches the call-scoring pipeline's `is_connected()`).
 - **Unique company per activity:** primary company of each associated contact; if an
   activity has no contact, a direct engagement→company association; else unattributed.
+- **Book coverage (cumulative):** of the accounts a rep owns, how many they have *ever* tapped —
+  rolled up to Group-Dealership / Single units (rooftops grouped by `gd_id`; a GD is tapped if any
+  owned rooftop is). Monotonic, and segmented by lifecycle stage, franchise/independent, and market
+  segment. Measured back to `COVERAGE_ANCHOR` (`config/hubspot.ts`), which widens the activity pull.
 
 ## Setup
 
@@ -51,7 +56,7 @@ Required HubSpot Private App scopes: `crm.objects.contacts.read`,
 | `npm run sync` | Pull from HubSpot, rebuild `data/snapshot.json` |
 | `npm run dev` | Run the dashboard locally |
 | `npm run build` | Production build (also typechecks) |
-| `npm test` | Unit tests for IST bucketing + aggregation |
+| `npm test` | Unit tests for US/Eastern bucketing (incl. DST) + aggregation |
 
 ## Deploy (Vercel)
 

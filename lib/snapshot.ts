@@ -6,7 +6,10 @@
  * Always returns a valid Snapshot — never throws into the page.
  */
 
-import { PERIOD_KEYS, PeriodKey, PeriodMetrics, Snapshot } from "./sync/types";
+import {
+  PERIOD_KEYS, PeriodKey, PeriodMetrics, Snapshot,
+  BookCoverage, CoverageDim, MarketSegment, MARKET_SEGMENTS, StageGroup, STAGE_GROUPS,
+} from "./sync/types";
 import { REPS, REP_OWNER_IDS } from "../config/reps";
 
 function emptyReach() {
@@ -26,14 +29,28 @@ function emptyMetrics(): PeriodMetrics {
     multitouch_accounts: 0,
     dm_contacts: 0,
     titled_contacts: 0,
-    coverage: {
-      owned_total: 0, owned_tapped: 0, pct: 0, untapped_count: 0, untapped_sample: [],
-      by_stage: { Converted: { owned: 0, tapped: 0 }, "In-pipeline": { owned: 0, tapped: 0 }, "Lead/MQL": { owned: 0, tapped: 0 }, Other: { owned: 0, tapped: 0 } },
-    },
     temp: { hot: 0, warm: 0, cold: 0 },
     quality: { score: 0, grade: "—", sub: { conversations: 0, depth: 0, persistence: 0, channel: 0, deliverability: 0 } },
     insights: [],
     unattributed_activities: 0,
+  };
+}
+
+const emptyDim = (): CoverageDim => ({ total: 0, tapped: 0 });
+
+function emptyBook(): BookCoverage {
+  const by_stage = {} as Record<StageGroup, CoverageDim>;
+  for (const g of STAGE_GROUPS) by_stage[g] = emptyDim();
+  const by_segment = {} as Record<MarketSegment, CoverageDim>;
+  for (const s of MARKET_SEGMENTS) by_segment[s] = emptyDim();
+  return {
+    units_total: 0, units_tapped: 0, pct: 0, rooftops_total: 0, gds: 0, singles: 0,
+    by_stage,
+    by_dealership: { Franchise: emptyDim(), Independent: emptyDim(), Unknown: emptyDim() },
+    by_segment,
+    by_group_kind: { group: emptyDim(), single: emptyDim() },
+    untapped_sample: [],
+    insights: [],
   };
 }
 
@@ -42,15 +59,16 @@ export function emptySnapshot(): Snapshot {
   for (const id of REP_OWNER_IDS) {
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
     for (const p of PERIOD_KEYS) periods[p] = emptyMetrics();
-    reps[id] = { periods, daily: [] };
+    reps[id] = { periods, daily: [], book: emptyBook() };
   }
   return {
     generated_at_utc: "",
-    today_ist: "",
+    today_et: "",
     week_start: "MON",
+    tz: "America/New_York",
     scope: "outbound",
     sources: { calls: false, emails: false },
-    window: { start_ist: "", end_ist: "" },
+    window: { start_et: "", end_et: "" },
     totals: { calls: 0, emails: 0, reps: REP_OWNER_IDS.length, window_days: 0 },
     owner_names: REPS,
     reps,

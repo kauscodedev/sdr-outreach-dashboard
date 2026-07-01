@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import {
-  PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS,
+  PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
+  BookCoverage, CoverageDim,
 } from "../lib/sync/types";
 import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
 import { companyUrl, contactUrl } from "../config/hubspot";
@@ -18,10 +19,10 @@ const fmt = (n: number) => n.toLocaleString("en-IN");
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 const pct0 = (x: number) => `${Math.round(x * 100)}%`;
 
-function istStamp(iso: string): string {
+function etStamp(iso: string): string {
   if (!iso) return "never";
   try {
-    return new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }) + " IST";
+    return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }) + " ET";
   } catch { return iso; }
 }
 
@@ -60,7 +61,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
     const val = (r: Row): number | string => ({
       name: r.name.toLowerCase(), quality: r.m.quality.score, touches: r.touches,
-      contacts: r.m.contacts.total, companies: r.m.companies.total, coverage: r.m.coverage.pct,
+      contacts: r.m.contacts.total, companies: r.m.companies.total, coverage: r.data.book.pct,
       connect: r.m.calls.connect_rate, reply: r.m.emails.reply_rate, meetings: r.m.meetings_booked, hot: r.m.temp.hot,
     }[sortKey]);
     return [...filtered].sort((a, b) => {
@@ -71,14 +72,14 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
   }, [allRows, repFilter, sortKey, sortDir]);
 
   const summary = useMemo(() => {
-    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, ownedTapped: 0, ownedTotal: 0, hot: 0, active: 0 };
+    const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0 };
     for (const r of rows) {
       a.touches += r.touches; a.contacts += r.m.contacts.total; a.companies += r.m.companies.total;
       a.calls += r.m.calls.total; a.connected += r.m.calls.connected; a.denom += r.m.calls.connected + r.m.calls.not_connected;
-      a.meetings += r.m.meetings_booked; a.ownedTapped += r.m.coverage.owned_tapped; a.ownedTotal += r.m.coverage.owned_total; a.hot += r.m.temp.hot;
+      a.meetings += r.m.meetings_booked; a.unitsTapped += r.data.book.units_tapped; a.unitsTotal += r.data.book.units_total; a.hot += r.m.temp.hot;
       if (r.touches > 0) a.active++;
     }
-    return { ...a, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.ownedTotal ? a.ownedTapped / a.ownedTotal : 0 };
+    return { ...a, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
   }, [rows]);
 
   function toggleSort(key: SortKey) {
@@ -87,10 +88,10 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
   }
 
   function exportCsv() {
-    const head = ["Rep","Quality","Grade","Touches","Calls","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqCompanies","Owned","OwnedTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
-    const lines = rows.map((r) => { const m = r.m; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, m.coverage.owned_total, m.coverage.owned_tapped, m.coverage.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
+    const head = ["Rep","Quality","Grade","Touches","Calls","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqCompanies","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
+    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = `sdr-outreach-${period}-${snapshot.today_ist || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
+    const a = document.createElement("a"); a.href = url; a.download = `sdr-outreach-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
 
   const hasData = !!snapshot.generated_at_utc;
@@ -102,11 +103,11 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
           <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-3xl font-black tracking-tight text-transparent">
             SDR Outreach Coverage
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Quantity × quality of outbound, per rep · reach by activity · owned-book coverage by stage · IST · week starts Mon</p>
+          <p className="mt-1 text-sm text-slate-500">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
         </div>
         <div className="text-right text-xs text-slate-500">
-          <div>Refreshed <span className="font-semibold text-blue-600">{istStamp(snapshot.generated_at_utc)}</span></div>
-          <div>{snapshot.window.start_ist || "—"} → {snapshot.window.end_ist || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
+          <div>Refreshed <span className="font-semibold text-blue-600">{etStamp(snapshot.generated_at_utc)}</span></div>
+          <div>{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
         </div>
       </header>
 
@@ -135,7 +136,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
         <Card label="Touches" value={fmt(summary.touches)} hint={`${fmt(summary.calls)}☎ ${fmt(summary.touches - summary.calls)}✉`} grad="from-slate-700 to-slate-900" />
         <Card label="Unique contacts" value={fmt(summary.contacts)} hint="summed per rep" grad="from-blue-500 to-indigo-600" />
         <Card label="Unique companies" value={fmt(summary.companies)} hint="summed per rep" grad="from-indigo-500 to-violet-600" />
-        <Card label="Owned coverage" value={summary.ownedTotal ? pct0(summary.coverage) : "—"} hint={summary.ownedTotal ? `${fmt(summary.ownedTapped)}/${fmt(summary.ownedTotal)}` : "—"} grad="from-violet-500 to-fuchsia-600" />
+        <Card label="Book coverage" value={summary.unitsTotal ? pct0(summary.coverage) : "—"} hint={summary.unitsTotal ? `${fmt(summary.unitsTapped)}/${fmt(summary.unitsTotal)} accts` : "—"} grad="from-violet-500 to-fuchsia-600" />
         <Card label="Connect rate" value={pct(summary.connectRate)} grad="from-emerald-500 to-teal-600" />
         <Card label="Meetings 🎯" value={fmt(summary.meetings)} hint={`${fmt(summary.hot)} hot 🔥`} grad="from-rose-500 to-orange-500" />
       </div>
@@ -163,7 +164,7 @@ export default function Dashboard({ snapshot }: { snapshot: Snapshot }) {
       </div>
 
       <p className="mt-4 text-xs text-slate-400">
-        Coverage = owned accounts (company owner = rep) tapped, by lifecycle/gd-level. Temperature: 🔥 meeting/high-intent/replied · 🌤 connected/opened · 🧊 no engagement.
+        Coverage = cumulative owned accounts (company owner = rep) the rep has ever tapped, rolled up to Group Dealership / Single units. Temperature: 🔥 meeting/high-intent/replied · 🌤 connected/opened · 🧊 no engagement.
         Quality = conversations · depth · persistence · channel · deliverability. Decision-maker reach via job title/seniority. Per-account detail (HubSpot links) for {NARROW_PERIODS.map((p) => PERIOD_LABELS[p]).join(", ")}.
       </p>
     </main>
@@ -213,7 +214,7 @@ function RepRow({ row, period, isOpen, onToggle }: { row: Row; period: PeriodKey
         <td className="px-3 py-2.5 text-right font-bold tabular-nums text-slate-900">{fmt(row.touches)}</td>
         <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.contacts.total)}<span className="ml-1 text-[10px] text-slate-400">☎{fmt(m.contacts.via_call)}/✉{fmt(m.contacts.via_email)}</span></td>
         <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.companies.total)}</td>
-        <td className="px-3 py-2.5">{m.coverage.owned_total > 0 ? <div className="flex items-center gap-2"><MiniBar x={m.coverage.pct} color="bg-gradient-to-r from-violet-500 to-fuchsia-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(m.coverage.pct)}</span></div> : <span className="text-xs text-slate-300">—</span>}</td>
+        <td className="px-3 py-2.5">{row.data.book.units_total > 0 ? <div className="flex items-center gap-2"><MiniBar x={row.data.book.pct} color="bg-gradient-to-r from-violet-500 to-fuchsia-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(row.data.book.pct)}</span></div> : <span className="text-xs text-slate-300">—</span>}</td>
         <td className="px-3 py-2.5"><div className="flex items-center gap-2"><MiniBar x={m.calls.connect_rate} color="bg-emerald-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(m.calls.connect_rate)}</span></div></td>
         <td className="px-3 py-2.5 tabular-nums text-xs text-slate-500">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
         <td className="px-3 py-2.5 text-right tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-emerald-600">{m.meetings_booked}</span> : <span className="text-slate-300">0</span>}</td>
@@ -230,7 +231,7 @@ function Scorecard({ data, m, period, name }: { data: RepData; m: PeriodMetrics;
       <InsightChips insights={m.insights} />
       <KpiStrip m={m} />
       <div className="grid gap-5 lg:grid-cols-2">
-        <CoverageCard m={m} />
+        <CoverageCard book={data.book} />
         <TempCard m={m} />
       </div>
       <div className="grid gap-5 lg:grid-cols-3">
@@ -241,7 +242,7 @@ function Scorecard({ data, m, period, name }: { data: RepData; m: PeriodMetrics;
       <DailyChart daily={data.daily} name={name} />
       <div className="grid gap-5 lg:grid-cols-2">
         <DispositionCard m={m} />
-        <CompaniesCard m={m} period={period} />
+        <CompaniesCard m={m} period={period} book={data.book} />
       </div>
     </div>
   );
@@ -281,25 +282,48 @@ function Donut({ pct: p, label }: { pct: number; label: string }) {
   );
 }
 
-function CoverageCard({ m }: { m: PeriodMetrics }) {
-  const c = m.coverage;
+function CoverageBar({ label, dim, chip }: { label: string; dim: CoverageDim; chip?: string }) {
+  if (dim.total === 0) return null;
+  const p = dim.tapped / dim.total;
+  return (
+    <div className="text-xs">
+      <div className="flex justify-between">
+        <span className={chip ? `rounded px-1.5 py-0.5 ${chip}` : "text-slate-600"}>{label}</span>
+        <span className="tabular-nums text-slate-500">{fmt(dim.tapped)}/{fmt(dim.total)} · {pct0(p)}</span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500" style={{ width: pct0(p) }} /></div>
+    </div>
+  );
+}
+
+function CoverageCard({ book }: { book: BookCoverage }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Owned-book coverage by stage (gd level)</h3>
-      {c.owned_total === 0 ? <p className="text-sm text-slate-400">No owned accounts for this rep.</p> : (
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-1">
+        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Owned-book coverage (cumulative · GD level)</h3>
+        {book.units_total > 0 && <span className="text-[11px] text-slate-400">{fmt(book.gds)} GDs · {fmt(book.singles)} singles · {fmt(book.rooftops_total)} rooftops</span>}
+      </div>
+      {book.units_total === 0 ? <p className="text-sm text-slate-400">No owned accounts for this rep.</p> : (
         <div className="flex items-start gap-4">
-          <div className="flex flex-col items-center gap-1"><Donut pct={c.pct} label={pct0(c.pct)} /><div className="text-[11px] text-slate-500">{fmt(c.owned_tapped)}/{fmt(c.owned_total)} tapped</div></div>
-          <div className="flex-1 space-y-2">
-            {STAGE_GROUPS.map((g) => {
-              const s = c.by_stage[g]; if (!s || s.owned === 0) return null;
-              const p = s.owned ? s.tapped / s.owned : 0;
-              return (
-                <div key={g} className="text-xs">
-                  <div className="flex justify-between"><span className={`rounded px-1.5 py-0.5 ${STAGE_CHIP[g]}`}>{g}</span><span className="tabular-nums text-slate-500">{fmt(s.tapped)}/{fmt(s.owned)} · {pct0(p)}</span></div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500" style={{ width: pct0(p) }} /></div>
-                </div>
-              );
-            })}
+          <div className="flex flex-col items-center gap-1"><Donut pct={book.pct} label={pct0(book.pct)} /><div className="text-[11px] text-slate-500">{fmt(book.units_tapped)}/{fmt(book.units_total)} tapped</div></div>
+          <div className="flex-1 space-y-3">
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">By lifecycle stage</div>
+              <div className="space-y-2">{STAGE_GROUPS.map((g) => <CoverageBar key={g} label={g} dim={book.by_stage[g]} chip={STAGE_CHIP[g]} />)}</div>
+            </div>
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Group vs single · franchise vs independent</div>
+              <div className="space-y-2">
+                <CoverageBar label="Group dealerships" dim={book.by_group_kind.group} />
+                <CoverageBar label="Singles" dim={book.by_group_kind.single} />
+                <CoverageBar label="Franchise" dim={book.by_dealership.Franchise} />
+                <CoverageBar label="Independent" dim={book.by_dealership.Independent} />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">By market segment</div>
+              <div className="space-y-2">{MARKET_SEGMENTS.map((s) => <CoverageBar key={s} label={MARKET_SEGMENT_LABELS[s]} dim={book.by_segment[s]} />)}</div>
+            </div>
           </div>
         </div>
       )}
@@ -418,29 +442,30 @@ function DispositionCard({ m }: { m: PeriodMetrics }) {
   );
 }
 
-function CompaniesCard({ m, period }: { m: PeriodMetrics; period: PeriodKey }) {
+function CompaniesCard({ m, period, book }: { m: PeriodMetrics; period: PeriodKey; book: BookCoverage }) {
   const [openCo, setOpenCo] = useState<string | null>(null);
   const [showUntapped, setShowUntapped] = useState(false);
   const hasBreakdown = NARROW_PERIODS.includes(period);
   const breakdown = m.company_breakdown ?? [];
-  const untapped = m.coverage.untapped_sample ?? [];
+  const untapped = book.untapped_sample ?? [];
+  const untappedCount = Math.max(0, book.units_total - book.units_tapped);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Accounts {hasBreakdown ? `tapped (${breakdown.length})` : ""}</h3>
-        {m.coverage.untapped_count > 0 && <button onClick={() => setShowUntapped((s) => !s)} className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100">{showUntapped ? "Show tapped" : `Untapped (${fmt(m.coverage.untapped_count)})`}</button>}
+        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Accounts {showUntapped ? "untapped (cumulative)" : hasBreakdown ? `tapped this period (${breakdown.length})` : ""}</h3>
+        {untappedCount > 0 && <button onClick={() => setShowUntapped((s) => !s)} className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100">{showUntapped ? "Show tapped" : `Untapped (${fmt(untappedCount)})`}</button>}
       </div>
 
       {showUntapped ? (
-        untapped.length === 0 ? <p className="text-sm text-slate-400">Untapped list shown for This week / This month.</p> : (
+        untapped.length === 0 ? <p className="text-sm text-slate-400">Every owned account has been tapped. 🎉</p> : (
           <div className="max-h-72 space-y-0.5 overflow-y-auto pr-1">
             {untapped.map((c) => (
               <a key={c.id} href={companyUrl(c.id)} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between rounded-lg px-2 py-1 text-sm text-slate-600 hover:bg-slate-50">
                 <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{c.name}</span>{c.stage && <span className={`shrink-0 rounded px-1 text-[9px] ${STAGE_CHIP[c.stage as StageGroup] ?? ""}`}>{c.stage}</span>}</span><span className="shrink-0 text-blue-600">↗</span>
               </a>
             ))}
-            {m.coverage.untapped_count > untapped.length && <p className="px-2 py-1 text-xs text-slate-400">+ {fmt(m.coverage.untapped_count - untapped.length)} more untapped</p>}
+            {untappedCount > untapped.length && <p className="px-2 py-1 text-xs text-slate-400">+ {fmt(untappedCount - untapped.length)} more untapped</p>}
           </div>
         )
       ) : !hasBreakdown ? <p className="text-sm text-slate-400">Per-account detail for Today / Yesterday / This week.</p>

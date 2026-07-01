@@ -82,19 +82,65 @@ export interface NamedRef {
 export const STAGE_GROUPS = ["Converted", "In-pipeline", "Lead/MQL", "Other"] as const;
 export type StageGroup = (typeof STAGE_GROUPS)[number];
 
-export interface StageCoverage {
-  owned: number;
+/** A count pair for one coverage dimension: total units vs tapped units. */
+export interface CoverageDim {
+  total: number;
   tapped: number;
 }
 
-/** Coverage of the rep's owned book (company owner = rep). */
-export interface Coverage {
-  owned_total: number;
-  owned_tapped: number;
-  pct: number; // owned_tapped / owned_total
-  untapped_count: number;
-  untapped_sample: NamedRef[]; // capped; populated for coverage periods only
-  by_stage: Record<StageGroup, StageCoverage>; // owned + tapped per lifecycle group
+/** Market-segment sizes (HubSpot `market_segment` enum). */
+export const MARKET_SEGMENTS = [
+  "smb", "mm_single", "mm_group", "enterprise_a", "enterprise_b", "enterprise_c", "top_150", "unsized",
+] as const;
+export type MarketSegment = (typeof MARKET_SEGMENTS)[number];
+
+export const MARKET_SEGMENT_LABELS: Record<MarketSegment, string> = {
+  smb: "SMB",
+  mm_single: "MM · Single",
+  mm_group: "MM · Group",
+  enterprise_a: "Ent A",
+  enterprise_b: "Ent B",
+  enterprise_c: "Ent C",
+  top_150: "Top 150",
+  unsized: "Unsized",
+};
+
+export type DealershipType = "Franchise" | "Independent" | "Unknown";
+
+/**
+ * One owned "unit" at Group-Dealership / Single granularity. A group unit collapses all
+ * of the rep's owned rooftops that share a gd_id; a single is a lone rooftop.
+ */
+export interface BookUnit {
+  key: string; // `gd:${gdId}` for a group, `single:${companyId}` otherwise
+  name: string;
+  isGroup: boolean;
+  rooftops: number; // # owned rooftops in this unit
+  tapped: boolean; // any owned rooftop tapped by the OWNING rep (cumulative)
+  stage: StageGroup; // furthest-along stage among the unit's rooftops
+  dealership: DealershipType;
+  segment: MarketSegment;
+}
+
+/**
+ * Cumulative coverage of a rep's owned book, rolled up to GD/Single units. Monotonic: a
+ * unit stays tapped once the owning rep has ever put an outbound activity on any of its
+ * rooftops (over the coverage-anchor window). Drop-off / junk accounts stay in the
+ * denominator as long as they are still owned by the rep.
+ */
+export interface BookCoverage {
+  units_total: number; // distinct GD/single units owned
+  units_tapped: number; // units with >=1 rooftop tapped by the owner
+  pct: number; // units_tapped / units_total
+  rooftops_total: number; // raw owned rooftops (reference)
+  gds: number; // distinct group units
+  singles: number; // single units
+  by_stage: Record<StageGroup, CoverageDim>; // GD-level, furthest-along stage
+  by_dealership: Record<DealershipType, CoverageDim>;
+  by_segment: Record<MarketSegment, CoverageDim>;
+  by_group_kind: { group: CoverageDim; single: CoverageDim }; // GDs vs Singles
+  untapped_sample: NamedRef[]; // capped untapped units
+  insights: Insight[]; // coverage-specific callouts
 }
 
 /** Tapped accounts classified by engagement temperature. */
@@ -172,8 +218,6 @@ export interface PeriodMetrics {
   // Decision-maker reach (by seniority / job title)
   dm_contacts: number; // unique decision-maker contacts tapped
   titled_contacts: number; // unique tapped contacts that have a job title
-  // Coverage of owned book
-  coverage: Coverage;
   // Account temperature (tapped accounts)
   temp: AccountTemp;
   // Quality
@@ -186,17 +230,19 @@ export interface PeriodMetrics {
 
 export interface RepData {
   periods: Record<PeriodKey, PeriodMetrics>;
-  daily: DailyPoint[]; // one point per IST day in the window
+  daily: DailyPoint[]; // one point per ET day in the (short) window
+  book: BookCoverage; // cumulative owned-book coverage — period-independent
 }
 
 export interface Snapshot {
   generated_at_utc: string;
-  today_ist: string; // YYYY-MM-DD
+  today_et: string; // YYYY-MM-DD (US/Eastern)
   week_start: "MON";
+  tz: string; // IANA timezone the boundaries are computed in
   scope: "outbound";
   /** Which HubSpot object types the token could actually read this run. */
   sources: { calls: boolean; emails: boolean };
-  window: { start_ist: string; end_ist: string };
+  window: { start_et: string; end_et: string };
   totals: { calls: number; emails: number; reps: number; window_days: number };
   owner_names: Record<string, string>;
   reps: Record<string, RepData>;

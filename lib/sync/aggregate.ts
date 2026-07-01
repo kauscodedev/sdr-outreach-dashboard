@@ -1,25 +1,32 @@
 /**
- * Aggregate resolved activities into per-rep, per-period metrics — a sales-leader
- * view of both QUANTITY and QUALITY of outbound engagement:
- *   - reach split by activity (contacts/companies via call / email / both)
- *   - email engagement (opens / replies / clicks)
- *   - decision-maker reach (by job title / seniority)
- *   - coverage of the rep's owned book, segmented by lifecycle ("gd level")
- *   - account temperature (hot/warm/cold) WITH a reason, from real signals
- *   - persistence (multi-touch), a composite quality score, and rule-based insights
+ * Aggregate resolved activities into per-rep metrics — a sales-leader view of both
+ * QUANTITY and QUALITY of outbound engagement:
+ *   - per-period (US/Eastern) volume, reach, email engagement, decision-maker reach,
+ *     account temperature, persistence, a composite quality score, and insights
+ *   - a per-rep CUMULATIVE owned-book coverage, rolled up to Group-Dealership / Single
+ *     units, segmented by lifecycle / dealership type / market segment. Coverage is
+ *     monotonic: a unit stays "tapped" once the OWNING rep has ever put an outbound
+ *     activity on any of its rooftops (over the coverage-anchor window).
  */
 
 import { REPS, REP_OWNER_IDS } from "../../config/reps";
 import { isConnected, isHighIntent, isMeeting, dispositionLabel } from "../../config/dispositions";
-import { IstContext, periodsForActivity, istDateStr, IST_OFFSET_MS } from "./buckets";
+import {
+  EtContext, periodsForActivity, etParts, etDateStr, etMidnightUtcMs, dayIndexToYmd, PORTAL_TZ,
+} from "./buckets";
 import { OwnedCompany } from "./pull";
 import { ContactMeta } from "./associate";
 import {
   Activity,
   AccountTemp,
-  Coverage,
+  BookCoverage,
+  CoverageDim,
   DailyPoint,
+  DealershipType,
   Insight,
+  MARKET_SEGMENTS,
+  MarketSegment,
+  NamedRef,
   PERIOD_KEYS,
   NARROW_PERIODS,
   PeriodKey,
@@ -28,13 +35,12 @@ import {
   ReachByChannel,
   RepData,
   Snapshot,
-  StageCoverage,
+  STAGE_GROUPS,
   StageGroup,
   Temperature,
 } from "./types";
 
 const DAY_MS = 86_400_000;
-const COVERAGE_SAMPLE_PERIODS = new Set<PeriodKey>(["this_week", "this_month"]);
 const UNTAPPED_SAMPLE_CAP = 200;
 
 /** Map a raw lifecyclestage value to a coarse pipeline group ("gd level"). */
@@ -190,8 +196,9 @@ function computeQuality(args: {
   return { score, grade, sub: { conversations: Math.round(conversations), depth: Math.round(depth), persistence: Math.round(persistence), channel: Math.round(channel), deliverability: Math.round(deliverability) } };
 }
 
+/** Per-period ACTIVITY insights (coverage callouts live on BookCoverage — see bookInsights). */
 function buildInsights(m: {
-  hasActivity: boolean; coverage: Coverage; meetings: number; hot: number;
+  hasActivity: boolean; meetings: number; hot: number;
   calls: number; emails: number; connectRate: number; connectDenom: number;
   companiesTapped: number; depth: number; persistenceShare: number;
   emailsSent: number; bounceRate: number; replyRate: number;
@@ -200,13 +207,6 @@ function buildInsights(m: {
   if (!m.hasActivity) return [{ level: "warn", text: "💤 No outbound activity this period" }];
   const out: Insight[] = [];
   const pct = (x: number) => `${Math.round(x * 100)}%`;
-
-  if (m.coverage.owned_total > 0) {
-    if (m.coverage.pct < 0.5) out.push({ level: "warn", text: `⚠ ${m.coverage.untapped_count} of ${m.coverage.owned_total} owned accounts untapped (${pct(m.coverage.pct)} covered)` });
-    else out.push({ level: "good", text: `✓ ${pct(m.coverage.pct)} of owned accounts tapped` });
-  }
-  const pipe = m.coverage.by_stage["In-pipeline"];
-  if (pipe && pipe.owned > 0 && pipe.tapped / pipe.owned < 0.5) out.push({ level: "warn", text: `🎯 Only ${pct(pipe.tapped / pipe.owned)} of in-pipeline accounts tapped` });
 
   if (m.meetings > 0) out.push({ level: "good", text: `🎯 ${m.meetings} meeting${m.meetings > 1 ? "s" : ""} booked` });
   if (m.hot > 0) out.push({ level: "good", text: `🔥 ${m.hot} hot account${m.hot > 1 ? "s" : ""}` });
@@ -225,10 +225,6 @@ function buildInsights(m: {
   return out;
 }
 
-const EMPTY_STAGE = (): Record<StageGroup, StageCoverage> => ({
-  Converted: { owned: 0, tapped: 0 }, "In-pipeline": { owned: 0, tapped: 0 }, "Lead/MQL": { owned: 0, tapped: 0 }, Other: { owned: 0, tapped: 0 },
-});
-
 function finalize(
   acc: Acc,
   period: PeriodKey,
@@ -236,7 +232,6 @@ function finalize(
   companyLifecycle: Record<string, string | null>,
   contactMeta: Record<string, ContactMeta>,
   ownedSet: Set<string>,
-  ownedList: OwnedCompany[],
 ): PeriodMetrics {
   const contacts = reachOf([...acc.contactTouch.values()].map((t) => ({ call: t.call > 0, email: t.email > 0 })));
   const companies = reachOf([...acc.companyStat.values()].map((s) => ({ call: s.calls > 0, email: s.emails > 0 })));
@@ -271,31 +266,9 @@ function finalize(
   const clickRate = acc.emailsSent ? acc.emailsClicked / acc.emailsSent : 0;
   const persistenceShare = companiesTapped ? multitouchAccounts / companiesTapped : 0;
 
-  // Coverage of owned book + by lifecycle group.
-  const byStage = EMPTY_STAGE();
-  let ownedTapped = 0;
-  for (const c of ownedList) {
-    const g = stageGroup(c.lifecycle);
-    byStage[g].owned++;
-    if (acc.companyStat.has(c.id)) { byStage[g].tapped++; ownedTapped++; }
-  }
-  const ownedTotal = ownedList.length;
-  const untappedSample =
-    COVERAGE_SAMPLE_PERIODS.has(period) && ownedTotal > 0
-      ? ownedList.filter((c) => !acc.companyStat.has(c.id)).slice(0, UNTAPPED_SAMPLE_CAP).map((c) => ({ id: c.id, name: c.name, stage: stageGroup(c.lifecycle) }))
-      : [];
-  const coverage: Coverage = {
-    owned_total: ownedTotal,
-    owned_tapped: ownedTapped,
-    pct: ownedTotal ? round(ownedTapped / ownedTotal, 3) : 0,
-    untapped_count: Math.max(0, ownedTotal - ownedTapped),
-    untapped_sample: untappedSample,
-    by_stage: byStage,
-  };
-
   const hasActivity = acc.callsTotal + acc.emailsSent > 0;
   const quality = computeQuality({ connectRate, meetings: acc.meetingsBooked, replyRate, openRate, depth, persistenceShare, calls: acc.callsTotal, emails: acc.emailsSent, bounceRate, hasActivity });
-  const insights = buildInsights({ hasActivity, coverage, meetings: acc.meetingsBooked, hot: temp.hot, calls: acc.callsTotal, emails: acc.emailsSent, connectRate, connectDenom, companiesTapped, depth, persistenceShare, emailsSent: acc.emailsSent, bounceRate, replyRate, dmContacts, titledContacts });
+  const insights = buildInsights({ hasActivity, meetings: acc.meetingsBooked, hot: temp.hot, calls: acc.callsTotal, emails: acc.emailsSent, connectRate, connectDenom, companiesTapped, depth, persistenceShare, emailsSent: acc.emailsSent, bounceRate, replyRate, dmContacts, titledContacts });
 
   const metrics: PeriodMetrics = {
     calls: {
@@ -316,7 +289,6 @@ function finalize(
     multitouch_accounts: multitouchAccounts,
     dm_contacts: dmContacts,
     titled_contacts: titledContacts,
-    coverage,
     temp,
     quality,
     insights,
@@ -348,52 +320,176 @@ function finalize(
   return metrics;
 }
 
+// ── Cumulative owned-book coverage (GD/Single units) ───────────────────────────────
+
+const STAGE_RANK: Record<StageGroup, number> = { Converted: 0, "In-pipeline": 1, "Lead/MQL": 2, Other: 3 };
+
+/** Furthest-along stage among a unit's rooftops (a GD is as advanced as its best rooftop). */
+function furthestStage(stages: StageGroup[]): StageGroup {
+  let best: StageGroup = "Other";
+  for (const s of stages) if (STAGE_RANK[s] < STAGE_RANK[best]) best = s;
+  return best;
+}
+
+function pickDealership(rooftops: OwnedCompany[]): DealershipType {
+  for (const r of rooftops) {
+    if (r.dealershipType === "Franchise" || r.dealershipType === "Independent") return r.dealershipType;
+  }
+  return "Unknown";
+}
+
+function pickSegment(rooftops: OwnedCompany[]): MarketSegment {
+  for (const r of rooftops) {
+    if (r.segment && (MARKET_SEGMENTS as readonly string[]).includes(r.segment)) return r.segment as MarketSegment;
+  }
+  return "unsized";
+}
+
+const emptyDim = (): CoverageDim => ({ total: 0, tapped: 0 });
+const bump = (d: CoverageDim, tapped: boolean) => { d.total++; if (tapped) d.tapped++; };
+const emptyStageDims = (): Record<StageGroup, CoverageDim> => {
+  const o = {} as Record<StageGroup, CoverageDim>;
+  for (const g of STAGE_GROUPS) o[g] = emptyDim();
+  return o;
+};
+const emptySegmentDims = (): Record<MarketSegment, CoverageDim> => {
+  const o = {} as Record<MarketSegment, CoverageDim>;
+  for (const s of MARKET_SEGMENTS) o[s] = emptyDim();
+  return o;
+};
+
+/** Coverage-specific good/warn callouts, at GD-unit granularity. */
+function bookInsights(b: BookCoverage): Insight[] {
+  if (b.units_total === 0) return [];
+  const out: Insight[] = [];
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  const untapped = b.units_total - b.units_tapped;
+
+  if (b.pct < 0.5) out.push({ level: "warn", text: `⚠ ${untapped} of ${b.units_total} owned accounts untapped (${pct(b.pct)} covered)` });
+  else out.push({ level: "good", text: `✓ ${pct(b.pct)} of owned accounts tapped` });
+
+  const pipe = b.by_stage["In-pipeline"];
+  if (pipe.total > 0 && pipe.tapped / pipe.total < 0.5) {
+    out.push({ level: "warn", text: `🎯 Only ${pct(pipe.tapped / pipe.total)} of in-pipeline accounts tapped` });
+  }
+  return out;
+}
+
+/**
+ * Roll the rep's owned rooftops into GD/Single units and compute cumulative coverage.
+ * A group unit requires BOTH the group flag AND a gd_id; anything else is a single unit
+ * (group-flagged rooftops with no gd_id fall back to single — counted, never dropped).
+ */
+function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>): BookCoverage {
+  const units = new Map<string, { name: string; isGroup: boolean; rooftops: OwnedCompany[] }>();
+  for (const c of ownedList) {
+    const isGroupUnit = c.isGroup && !!c.gdId;
+    const key = isGroupUnit ? `gd:${c.gdId}` : `single:${c.id}`;
+    const u = units.get(key) ?? { name: isGroupUnit ? (c.groupName || c.name) : c.name, isGroup: isGroupUnit, rooftops: [] };
+    if (isGroupUnit && c.groupName) u.name = c.groupName; // prefer the group label
+    u.rooftops.push(c);
+    units.set(key, u);
+  }
+
+  const by_stage = emptyStageDims();
+  const by_dealership: Record<DealershipType, CoverageDim> = { Franchise: emptyDim(), Independent: emptyDim(), Unknown: emptyDim() };
+  const by_segment = emptySegmentDims();
+  const by_group_kind = { group: emptyDim(), single: emptyDim() };
+  const untapped_sample: NamedRef[] = [];
+
+  let units_total = 0, units_tapped = 0, gds = 0, singles = 0, rooftops_total = 0;
+
+  for (const u of units.values()) {
+    units_total++;
+    rooftops_total += u.rooftops.length;
+    if (u.isGroup) gds++; else singles++;
+
+    const tapped = u.rooftops.some((r) => everTapped.has(r.id));
+    if (tapped) units_tapped++;
+
+    const stage = furthestStage(u.rooftops.map((r) => stageGroup(r.lifecycle)));
+    bump(by_stage[stage], tapped);
+    bump(by_dealership[pickDealership(u.rooftops)], tapped);
+    bump(by_segment[pickSegment(u.rooftops)], tapped);
+    bump(u.isGroup ? by_group_kind.group : by_group_kind.single, tapped);
+
+    if (!tapped && untapped_sample.length < UNTAPPED_SAMPLE_CAP) {
+      untapped_sample.push({ id: u.rooftops[0].id, name: u.name, stage });
+    }
+  }
+
+  const book: BookCoverage = {
+    units_total, units_tapped,
+    pct: units_total ? round(units_tapped / units_total, 3) : 0,
+    rooftops_total, gds, singles,
+    by_stage, by_dealership, by_segment, by_group_kind, untapped_sample,
+    insights: [],
+  };
+  book.insights = bookInsights(book);
+  return book;
+}
+
 export function aggregate(
   activities: Activity[],
   companyNames: Record<string, string>,
   companyLifecycle: Record<string, string | null>,
   contactMeta: Record<string, ContactMeta>,
   ownedCompanies: Record<string, OwnedCompany[]>,
-  ctx: IstContext,
+  ctx: EtContext,
   generatedAtMs: number,
   sources: { calls: boolean; emails: boolean },
 ): Snapshot {
   const accs = new Map<string, Map<PeriodKey, Acc>>();
   const dailyAcc = new Map<string, Map<string, { calls: number; connected: number; emails: number }>>();
+  const ownedSets = new Map<string, Set<string>>();
+  const everTapped = new Map<string, Set<string>>();
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = new Map<PeriodKey, Acc>();
     for (const p of PERIOD_KEYS) byPeriod.set(p, newAcc());
     accs.set(ownerId, byPeriod);
     dailyAcc.set(ownerId, new Map());
+    ownedSets.set(ownerId, new Set((ownedCompanies[ownerId] ?? []).map((c) => c.id)));
+    everTapped.set(ownerId, new Set());
   }
 
+  // totals reflect the short (display) window; everTapped uses the full anchored set.
   let totalCalls = 0, totalEmails = 0;
   for (const a of activities) {
-    if (a.type === "call") totalCalls++;
-    else totalEmails++;
     const byPeriod = accs.get(a.ownerId);
     if (!byPeriod) continue;
+
     for (const period of periodsForActivity(a.timestampMs, ctx)) applyActivity(byPeriod.get(period)!, a);
 
-    const day = istDateStr(a.timestampMs);
-    const dmap = dailyAcc.get(a.ownerId)!;
-    const d = dmap.get(day) ?? { calls: 0, connected: 0, emails: 0 };
-    if (a.type === "call") { d.calls++; if (a.disposition && isConnected(a.disposition)) d.connected++; }
-    else d.emails++;
-    dmap.set(day, d);
+    // Cumulative, owner-scoped tapped set (a company counts only if its owner acted on it).
+    const owned = ownedSets.get(a.ownerId)!;
+    const tappedSet = everTapped.get(a.ownerId)!;
+    for (const co of a.companyIds) if (owned.has(co)) tappedSet.add(co);
+
+    // Daily trend + display totals: only within the short window.
+    if (etParts(a.timestampMs).dayIndex >= ctx.dailyStartIndex) {
+      if (a.type === "call") totalCalls++; else totalEmails++;
+      const day = etDateStr(a.timestampMs);
+      const dmap = dailyAcc.get(a.ownerId)!;
+      const d = dmap.get(day) ?? { calls: 0, connected: 0, emails: 0 };
+      if (a.type === "call") { d.calls++; if (a.disposition && isConnected(a.disposition)) d.connected++; }
+      else d.emails++;
+      dmap.set(day, d);
+    }
   }
 
-  const startIdx = Math.floor((ctx.windowStartMs + IST_OFFSET_MS) / DAY_MS);
   const windowDates: string[] = [];
-  for (let di = startIdx; di <= ctx.todayIndex; di++) windowDates.push(istDateStr(di * DAY_MS - IST_OFFSET_MS));
+  for (let di = ctx.dailyStartIndex; di <= ctx.todayIndex; di++) {
+    const [y, m, d] = dayIndexToYmd(di);
+    windowDates.push(etDateStr(etMidnightUtcMs(y, m, d)));
+  }
 
   const reps: Record<string, RepData> = {};
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = accs.get(ownerId)!;
     const ownedList = ownedCompanies[ownerId] ?? [];
-    const ownedSet = new Set(ownedList.map((c) => c.id));
+    const ownedSet = ownedSets.get(ownerId)!;
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
-    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyLifecycle, contactMeta, ownedSet, ownedList);
+    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyLifecycle, contactMeta, ownedSet);
 
     const dmap = dailyAcc.get(ownerId)!;
     const daily: DailyPoint[] = windowDates.map((date) => {
@@ -401,16 +497,18 @@ export function aggregate(
       return { date, calls: d.calls, connected: d.connected, emails: d.emails };
     });
 
-    reps[ownerId] = { periods, daily };
+    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!);
+    reps[ownerId] = { periods, daily, book };
   }
 
   return {
     generated_at_utc: new Date(generatedAtMs).toISOString(),
-    today_ist: ctx.windowEndDate,
+    today_et: ctx.windowEndDate,
     week_start: "MON",
+    tz: PORTAL_TZ,
     scope: "outbound",
     sources,
-    window: { start_ist: ctx.windowStartDate, end_ist: ctx.windowEndDate },
+    window: { start_et: ctx.windowStartDate, end_et: ctx.windowEndDate },
     totals: { calls: totalCalls, emails: totalEmails, reps: REP_OWNER_IDS.length, window_days: Math.round((ctx.nowMs - ctx.windowStartMs) / DAY_MS) },
     owner_names: REPS,
     reps,

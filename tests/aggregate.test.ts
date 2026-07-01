@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { aggregate } from "../lib/sync/aggregate";
-import { makeIstContext } from "../lib/sync/buckets";
+import { makeEtContext } from "../lib/sync/buckets";
 import { Activity } from "../lib/sync/types";
+import { OwnedCompany } from "../lib/sync/pull";
 
-const NOW = Date.UTC(2026, 5, 29, 6, 30, 0); // noon IST
+const DAY_MS = 86_400_000;
+const NOW = Date.UTC(2026, 5, 29, 16, 0, 0); // 2026-06-29 12:00 EDT (US/Eastern, UTC-4)
 const REP = "69016314"; // Rajveer Singh (must exist in config/reps.ts)
 
 const CONNECTED = "f240bbac-87c9-4f6e-bf70-924b57d47db7"; // "Connected"
@@ -21,15 +23,32 @@ function act(partial: Partial<Activity>): Activity {
   };
 }
 
+function own(p: Partial<OwnedCompany> & { id: string }): OwnedCompany {
+  return {
+    name: p.id, lifecycle: null, gdId: null, isGroup: false,
+    groupName: null, segment: null, dealershipType: null, ...p,
+  };
+}
+
 describe("aggregate", () => {
-  const ctx = makeIstContext(NOW);
+  const ctx = makeEtContext(NOW);
   const activities: Activity[] = [
     act({ type: "call", disposition: CONNECTED, contactIds: ["A"], companyIds: ["X"] }),
     act({ type: "email", emailStatus: "SENT", emailOpened: true, contactIds: ["A"], companyIds: ["X"] }),
     act({ type: "call", disposition: BUSY, contactIds: ["B"], companyIds: ["X"] }),
     act({ type: "call", disposition: MEETING, contactIds: ["C"], companyIds: ["Y"] }),
+    // Taps group rooftop G1 60 days ago: cumulative-only, in NO period. Proves book != period.
+    act({ type: "call", disposition: CONNECTED, companyIds: ["G1"], timestampMs: NOW - 60 * DAY_MS }),
   ];
-  const owned = { [REP]: [{ id: "X", name: "Acme", lifecycle: "opportunity" }, { id: "Z", name: "Zeta", lifecycle: "lead" }] };
+  // Owned book: two singles (X tapped, Z untapped) + one GD of two rooftops (G1 tapped, G2 not).
+  const owned = {
+    [REP]: [
+      own({ id: "X", name: "Acme", lifecycle: "opportunity", segment: "mm_single", dealershipType: "Independent" }),
+      own({ id: "Z", name: "Zeta", lifecycle: "lead", segment: "mm_single" }),
+      own({ id: "G1", name: "Group A", lifecycle: "opportunity", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
+      own({ id: "G2", name: "Group B", lifecycle: "lead", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
+    ],
+  };
   const contactMeta = {
     A: { name: "Alice Owner", title: "Owner", dm: true },
     B: { name: "Bob Rep", title: "Sales Rep", dm: false },
@@ -37,18 +56,19 @@ describe("aggregate", () => {
   };
   const snap = aggregate(
     activities,
-    { X: "Acme", Y: "Yoyodyne" },
+    { X: "Acme", Y: "Yoyodyne", G1: "Group A" },
     { X: "opportunity", Y: "lead" },
     contactMeta,
     owned,
     ctx, NOW, { calls: true, emails: true },
   );
   const today = snap.reps[REP].periods.today;
+  const book = snap.reps[REP].book;
 
-  it("reports unique reach split by activity", () => {
+  it("reports unique reach split by activity (period-scoped, ignores the old G1 tap)", () => {
     expect(today.contacts.total).toBe(3);
     expect(today.contacts.both).toBe(1); // A via call + email
-    expect(today.companies.total).toBe(2);
+    expect(today.companies.total).toBe(2); // X, Y only
   });
 
   it("tracks email engagement", () => {
@@ -70,14 +90,7 @@ describe("aggregate", () => {
     expect(rows.find((r) => r.id === "X")!.temp_reason).toMatch(/connected/i);
   });
 
-  it("computes coverage segmented by lifecycle (gd level)", () => {
-    expect(today.coverage.owned_total).toBe(2);
-    expect(today.coverage.owned_tapped).toBe(1); // X tapped
-    expect(today.coverage.by_stage["In-pipeline"]).toEqual({ owned: 1, tapped: 1 }); // X = opportunity
-    expect(today.coverage.by_stage["Lead/MQL"]).toEqual({ owned: 1, tapped: 0 }); // Z = lead, untapped
-  });
-
-  it("produces a quality score and insights", () => {
+  it("produces a quality score and period insights", () => {
     expect(today.quality.score).toBeGreaterThan(0);
     expect(today.insights.some((i) => i.text.toLowerCase().includes("meeting"))).toBe(true);
   });
@@ -88,9 +101,41 @@ describe("aggregate", () => {
     expect(alice).toMatchObject({ name: "Alice Owner", title: "Owner", dm: true });
   });
 
-  it("builds a daily series and does not leak into last_week", () => {
+  it("builds a daily series and does not leak into last_week (old tap excluded)", () => {
     const daily = snap.reps[REP].daily;
     expect(daily[daily.length - 1]).toMatchObject({ date: "2026-06-29", calls: 3, connected: 2, emails: 1 });
     expect(snap.reps[REP].periods.last_week.calls.total).toBe(0);
+  });
+
+  it("computes cumulative book coverage at GD/Single unit level", () => {
+    expect(book.rooftops_total).toBe(4);
+    expect(book.units_total).toBe(3); // X, Z, and the GD (G1+G2 collapsed)
+    expect(book.gds).toBe(1);
+    expect(book.singles).toBe(2);
+    expect(book.units_tapped).toBe(2); // X (single) + GD (via G1)
+    expect(book.pct).toBe(0.667);
+  });
+
+  it("rolls a GD up to one unit — tapped if ANY owned rooftop is tapped", () => {
+    expect(book.by_group_kind.group).toEqual({ total: 1, tapped: 1 }); // GD tapped via G1 only
+    expect(book.by_group_kind.single).toEqual({ total: 2, tapped: 1 }); // X tapped, Z not
+  });
+
+  it("segments coverage by furthest-along lifecycle stage (GD level)", () => {
+    expect(book.by_stage["In-pipeline"]).toEqual({ total: 2, tapped: 2 }); // X + GD (opp beats lead)
+    expect(book.by_stage["Lead/MQL"]).toEqual({ total: 1, tapped: 0 }); // Z only
+  });
+
+  it("segments coverage by dealership type and market segment", () => {
+    expect(book.by_dealership.Franchise).toEqual({ total: 1, tapped: 1 }); // GD
+    expect(book.by_dealership.Independent).toEqual({ total: 1, tapped: 1 }); // X
+    expect(book.by_dealership.Unknown).toEqual({ total: 1, tapped: 0 }); // Z
+    expect(book.by_segment.mm_group).toEqual({ total: 1, tapped: 1 }); // GD
+    expect(book.by_segment.mm_single).toEqual({ total: 2, tapped: 1 }); // X, Z
+  });
+
+  it("lists untapped units and emits a coverage insight", () => {
+    expect(book.untapped_sample.map((u) => u.name)).toContain("Zeta");
+    expect(book.insights.some((i) => i.text.toLowerCase().includes("tapped"))).toBe(true);
   });
 });

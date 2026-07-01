@@ -14,7 +14,8 @@ config({ path: ".env.local" });
 config(); // also .env if present
 
 import { hubspotGet } from "../lib/hubspot/client";
-import { makeIstContext } from "../lib/sync/buckets";
+import { makeEtContext, etMidnightUtcMs } from "../lib/sync/buckets";
+import { COVERAGE_ANCHOR } from "../config/hubspot";
 import { pullActivities, pullOwnedCompanies } from "../lib/sync/pull";
 import { resolveAssociations } from "../lib/sync/associate";
 import { aggregate } from "../lib/sync/aggregate";
@@ -82,12 +83,17 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   const caps = await preflight();
 
-  const ctx = makeIstContext(Date.now());
+  const ctx = makeEtContext(Date.now());
+  // Pull back to the coverage anchor (for cumulative owned-book coverage), or the display
+  // window start if that is earlier. The 6 periods bucket from the same activity set.
+  const [ay, am, ad] = COVERAGE_ANCHOR.split("-").map(Number);
+  const pullStartMs = Math.min(ctx.windowStartMs, etMidnightUtcMs(ay, am, ad));
   console.log(
-    `\nWindow (IST): ${ctx.windowStartDate} → ${ctx.windowEndDate}  (today_ist=${ctx.windowEndDate}, week starts Monday)\n`,
+    `\nWindow (US/Eastern): display ${ctx.windowStartDate} → ${ctx.windowEndDate}; ` +
+      `coverage pull from ${COVERAGE_ANCHOR} (week starts Monday)\n`,
   );
 
-  const raw = await pullActivities(ctx.windowStartMs, ctx.nowMs, caps);
+  const raw = await pullActivities(pullStartMs, ctx.nowMs, caps);
   const { activities, companyNames, companyLifecycle, contactMeta } = await resolveAssociations(raw);
 
   // Coverage denominator: each rep's owned company book (with lifecycle).

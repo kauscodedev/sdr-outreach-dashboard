@@ -1,86 +1,130 @@
 /**
- * IST (UTC+5:30) period bucketing.
+ * US/Eastern (America/New_York) period bucketing.
  *
- * HubSpot stores hs_timestamp as UTC epoch-ms. The SDR team is in India, so all
- * "today / yesterday / this week …" boundaries are defined at IST midnight.
- * IST has NO daylight saving, so a fixed +5:30 offset is exact — no tz database
- * needed. (This deliberately differs from call-scoring-agent, which buckets in UTC.)
+ * HubSpot stores hs_timestamp as UTC epoch-ms. The dashboard mirrors HubSpot's own
+ * UI, whose portal timezone is US/Eastern, so all "today / yesterday / this week …"
+ * boundaries are defined at US/Eastern civil midnight.
+ *
+ * US/Eastern OBSERVES daylight saving, so a fixed offset would be wrong half the year.
+ * We use the runtime's built-in IANA timezone database via Intl.DateTimeFormat — no
+ * external tz library needed. (This is why day *identity* is a civil-calendar ordinal,
+ * NOT floor(ms / DAY): the UTC offset varies, but the calendar date does not.)
  */
 
 import { PeriodKey } from "./types";
 
-export const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000; // +5:30
+export const PORTAL_TZ = "America/New_York";
 
 const DAY_MS = 86_400_000;
 
-export interface IstParts {
+// Wall-clock parts (h23 so midnight is "00", never "24") in the portal timezone.
+const PARTS_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: PORTAL_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+// "YYYY-MM-DD" directly (en-CA yields ISO date order).
+const DATE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: PORTAL_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function partsOf(utcMs: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of PARTS_FMT.formatToParts(utcMs)) {
+    if (p.type !== "literal") out[p.type] = Number(p.value);
+  }
+  return out;
+}
+
+/** Civil ordinal (whole days since epoch) for a civil Y-M-D — offset-independent. */
+function civilIndex(year: number, month1to12: number, day: number): number {
+  return Math.floor(Date.UTC(year, month1to12 - 1, day) / DAY_MS);
+}
+
+/** Civil (year, month, day) for a civil ordinal. */
+function ymdOf(dayIndex: number): [number, number, number] {
+  const d = new Date(dayIndex * DAY_MS);
+  return [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+}
+
+export interface EtParts {
   year: number;
   month: number; // 1-12
   day: number; // 1-31
-  dayIndex: number; // whole IST days since epoch
+  dayIndex: number; // civil days since epoch (calendar identity, offset-independent)
 }
 
-/** Civil IST date for a UTC epoch-ms value. */
-export function istParts(utcMs: number): IstParts {
-  const shifted = utcMs + IST_OFFSET_MS;
-  const d = new Date(shifted);
-  return {
-    year: d.getUTCFullYear(),
-    month: d.getUTCMonth() + 1,
-    day: d.getUTCDate(),
-    dayIndex: Math.floor(shifted / DAY_MS),
-  };
+/** Civil US/Eastern date parts for a UTC epoch-ms value. */
+export function etParts(utcMs: number): EtParts {
+  const p = partsOf(utcMs);
+  return { year: p.year, month: p.month, day: p.day, dayIndex: civilIndex(p.year, p.month, p.day) };
 }
 
-/** "YYYY-MM-DD" for a UTC epoch-ms value, in IST. */
-export function istDateStr(utcMs: number): string {
-  const p = istParts(utcMs);
-  const mm = String(p.month).padStart(2, "0");
-  const dd = String(p.day).padStart(2, "0");
-  return `${p.year}-${mm}-${dd}`;
+/** "YYYY-MM-DD" for a UTC epoch-ms value, in US/Eastern. */
+export function etDateStr(utcMs: number): string {
+  return DATE_FMT.format(utcMs);
 }
 
-/** IST day index for the 1st of an IST month. */
-function monthStartIndex(year: number, month1to12: number): number {
-  // Date.UTC gives the epoch-ms for that civil date at UTC midnight, which is
-  // exactly the IST-shifted value for IST midnight of the same civil date.
-  return Math.floor(Date.UTC(year, month1to12 - 1, 1) / DAY_MS);
+/** Offset (ms) to ADD to a UTC instant to get US/Eastern wall-clock time. */
+function tzOffsetMs(utcMs: number): number {
+  const p = partsOf(utcMs);
+  const asIfUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return asIfUtc - utcMs;
 }
 
-/** Weekday with Monday = 0 for an IST day index. */
+/**
+ * UTC epoch-ms for US/Eastern civil midnight (00:00:00) of Y-M-D.
+ * Offset-lookup + one correction pass: the first offset estimate can be on the wrong
+ * side of a DST transition, so re-read the offset actually in effect at the guess.
+ * US midnights never fall inside the 1-hour spring-forward gap, so one pass converges.
+ */
+export function etMidnightUtcMs(year: number, month1to12: number, day: number): number {
+  const naive = Date.UTC(year, month1to12 - 1, day, 0, 0, 0); // wall time treated as UTC
+  const guess = naive - tzOffsetMs(naive);
+  return naive - tzOffsetMs(guess);
+}
+
+/** Weekday with Monday = 0 for a civil ordinal. */
 function weekdayMon(dayIndex: number): number {
-  // dayIndex 0 (1970-01-01) is a Thursday. getUTCDay on the shifted ms gives
-  // IST weekday with Sunday=0; convert to Monday=0.
   const sunBased = new Date(dayIndex * DAY_MS).getUTCDay(); // 0=Sun
   return (sunBased + 6) % 7;
 }
 
 /** Everything derived once from "now", reused for every activity. */
-export interface IstContext {
+export interface EtContext {
   nowMs: number;
-  today: IstParts;
+  today: EtParts;
   todayIndex: number;
-  weekStartIndex: number; // Monday of the current IST week
-  monthStartIndex: number; // 1st of the current IST month
-  windowStartMs: number; // earliest UTC ms we must pull from
-  windowStartDate: string; // YYYY-MM-DD (IST)
-  windowEndDate: string; // YYYY-MM-DD (IST) = today
+  weekStartIndex: number; // Monday of the current ET week
+  monthStartIndex: number; // 1st of the current ET month
+  dailyStartIndex: number; // earliest day the `daily` trend series should cover
+  windowStartMs: number; // earliest UTC ms the 6 periods need (may be widened by the caller)
+  windowStartDate: string; // YYYY-MM-DD (ET)
+  windowEndDate: string; // YYYY-MM-DD (ET) = today
 }
 
-export function makeIstContext(nowMs: number): IstContext {
-  const today = istParts(nowMs);
+export function makeEtContext(nowMs: number): EtContext {
+  const today = etParts(nowMs);
   const todayIndex = today.dayIndex;
   const weekStartIndex = todayIndex - weekdayMon(todayIndex);
-  const monthIdx = monthStartIndex(today.year, today.month);
+  const monthIdx = civilIndex(today.year, today.month, 1);
 
-  // Pull window = earliest boundary across the 6 periods:
-  //   last-week start, last-3-days start, this-month start.
+  // Earliest boundary across the 6 periods: last-week start, last-3-days start, month start.
   const lastWeekStartIndex = weekStartIndex - 7;
   const last3StartIndex = todayIndex - 2;
   const windowStartIndex = Math.min(lastWeekStartIndex, last3StartIndex, monthIdx);
 
-  // IST midnight of a day index, expressed back in UTC ms.
-  const windowStartMs = windowStartIndex * DAY_MS - IST_OFFSET_MS;
+  const [wy, wm, wd] = ymdOf(windowStartIndex);
+  const windowStartMs = etMidnightUtcMs(wy, wm, wd);
 
   return {
     nowMs,
@@ -88,17 +132,16 @@ export function makeIstContext(nowMs: number): IstContext {
     todayIndex,
     weekStartIndex,
     monthStartIndex: monthIdx,
+    dailyStartIndex: windowStartIndex,
     windowStartMs,
-    // windowStartMs is IST-midnight expressed in UTC; istDateStr re-applies the
-    // offset to recover the civil IST date.
-    windowStartDate: istDateStr(windowStartMs),
-    windowEndDate: istDateStr(nowMs),
+    windowStartDate: etDateStr(windowStartMs),
+    windowEndDate: etDateStr(nowMs),
   };
 }
 
 /** Which periods does an activity (UTC ms) fall into? An activity can match several. */
-export function periodsForActivity(utcMs: number, ctx: IstContext): PeriodKey[] {
-  const p = istParts(utcMs);
+export function periodsForActivity(utcMs: number, ctx: EtContext): PeriodKey[] {
+  const p = etParts(utcMs);
   const di = p.dayIndex;
   const out: PeriodKey[] = [];
 
@@ -110,4 +153,9 @@ export function periodsForActivity(utcMs: number, ctx: IstContext): PeriodKey[] 
   if (p.year === ctx.today.year && p.month === ctx.today.month) out.push("this_month");
 
   return out;
+}
+
+/** Civil (year, month, day) for a civil ordinal — exported for daily-series construction. */
+export function dayIndexToYmd(dayIndex: number): [number, number, number] {
+  return ymdOf(dayIndex);
 }
