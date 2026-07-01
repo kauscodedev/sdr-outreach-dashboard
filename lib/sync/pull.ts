@@ -52,7 +52,16 @@ const EMAIL_CONFIG: PullConfig = {
   objectType: "emails",
   directionProperty: "hs_email_direction",
   directionValue: "EMAIL", // "Outgoing"
-  properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_status", "hs_object_id"],
+  properties: [
+    "hs_timestamp",
+    "hubspot_owner_id",
+    "hs_email_direction",
+    "hs_email_status",
+    "hs_email_open_count",
+    "hs_email_click_count",
+    "hs_email_reply_count",
+    "hs_object_id",
+  ],
 };
 
 async function pullSlice(cfg: PullConfig, startMs: number, endMs: number): Promise<HsRecord[]> {
@@ -122,7 +131,15 @@ export interface RawActivity {
   timestampMs: number;
   disposition: string | null;
   emailStatus: string | null;
+  emailOpened: boolean;
+  emailReplied: boolean;
+  emailClicked: boolean;
 }
+
+const num = (v: string | null | undefined): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
 function toMs(hsTimestamp: string | null): number {
   if (!hsTimestamp) return NaN;
@@ -135,6 +152,7 @@ function toMs(hsTimestamp: string | null): number {
 export interface OwnedCompany {
   id: string;
   name: string;
+  lifecycle: string | null; // raw lifecyclestage value
 }
 
 /**
@@ -153,13 +171,17 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
       const body: Record<string, unknown> = {
         filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }] }],
         sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
-        properties: ["name"],
+        properties: ["name", "lifecyclestage"],
         limit: 100,
       };
       if (after) body.after = after;
       const res = await hubspotPost<SearchResponse>(`/crm/v3/objects/companies/search`, body);
       for (const r of res.results) {
-        companies.push({ id: r.id, name: r.properties.name?.trim() || `Company ${r.id}` });
+        companies.push({
+          id: r.id,
+          name: r.properties.name?.trim() || `Company ${r.id}`,
+          lifecycle: r.properties.lifecyclestage ?? null,
+        });
       }
       after = res.paging?.next?.after;
       await delay(RATE_LIMIT_DELAY_MS);
@@ -213,6 +235,9 @@ export async function pullActivities(
       timestampMs: toMs(c.properties.hs_timestamp),
       disposition: c.properties.hs_call_disposition ?? null,
       emailStatus: null,
+      emailOpened: false,
+      emailReplied: false,
+      emailClicked: false,
     });
   }
   for (const e of emails) {
@@ -223,6 +248,9 @@ export async function pullActivities(
       timestampMs: toMs(e.properties.hs_timestamp),
       disposition: null,
       emailStatus: e.properties.hs_email_status ?? null,
+      emailOpened: num(e.properties.hs_email_open_count) > 0,
+      emailReplied: num(e.properties.hs_email_reply_count) > 0,
+      emailClicked: num(e.properties.hs_email_click_count) > 0,
     });
   }
 

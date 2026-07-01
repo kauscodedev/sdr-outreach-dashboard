@@ -16,7 +16,7 @@ function emptyReach() {
 function emptyMetrics(): PeriodMetrics {
   return {
     calls: { total: 0, connected: 0, not_connected: 0, null_disposition: 0, connect_rate: 0, by_disposition: {} },
-    emails: { sent: 0, bounced: 0, bounce_rate: 0 },
+    emails: { sent: 0, bounced: 0, bounce_rate: 0, opened: 0, replied: 0, clicked: 0, open_rate: 0, reply_rate: 0, click_rate: 0 },
     meetings_booked: 0,
     contacts: emptyReach(),
     companies: emptyReach(),
@@ -24,7 +24,12 @@ function emptyMetrics(): PeriodMetrics {
     avg_contacts_per_company: 0,
     multitouch_contacts: 0,
     multitouch_accounts: 0,
-    coverage: { owned_total: 0, owned_tapped: 0, pct: 0, untapped_count: 0, untapped_sample: [] },
+    dm_contacts: 0,
+    titled_contacts: 0,
+    coverage: {
+      owned_total: 0, owned_tapped: 0, pct: 0, untapped_count: 0, untapped_sample: [],
+      by_stage: { Converted: { owned: 0, tapped: 0 }, "In-pipeline": { owned: 0, tapped: 0 }, "Lead/MQL": { owned: 0, tapped: 0 }, Other: { owned: 0, tapped: 0 } },
+    },
     temp: { hot: 0, warm: 0, cold: 0 },
     quality: { score: 0, grade: "—", sub: { conversations: 0, depth: 0, persistence: 0, channel: 0, deliverability: 0 } },
     insights: [],

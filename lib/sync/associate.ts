@@ -78,36 +78,57 @@ interface ObjResp {
   results?: { id: string; properties?: Record<string, string | null> }[];
 }
 
-/** Resolve names for a set of company ids via v3 objects batch read. */
-async function resolveCompanyNames(companyIds: string[]): Promise<Record<string, string>> {
+/** Resolve names + lifecycle for company ids via v3 objects batch read. */
+async function resolveCompanies(companyIds: string[]): Promise<{ names: Record<string, string>; lifecycle: Record<string, string | null> }> {
   const names: Record<string, string> = {};
-  if (companyIds.length === 0) return names;
+  const lifecycle: Record<string, string | null> = {};
+  if (companyIds.length === 0) return { names, lifecycle };
   for (const ids of chunk(companyIds, OBJ_BATCH)) {
-    const body = { properties: ["name"], inputs: ids.map((id) => ({ id })) };
+    const body = { properties: ["name", "lifecyclestage"], inputs: ids.map((id) => ({ id })) };
     const res = await hubspotPost<ObjResp>(`/crm/v3/objects/companies/batch/read`, body);
     for (const r of res.results ?? []) {
       names[r.id] = r.properties?.name?.trim() || `Company ${r.id}`;
+      lifecycle[r.id] = r.properties?.lifecyclestage ?? null;
     }
     await delay(RATE_LIMIT_DELAY_MS);
   }
-  return names;
+  return { names, lifecycle };
 }
 
-/** Resolve display names for contacts via v3 objects batch read. */
-async function resolveContactNames(contactIds: string[]): Promise<Record<string, string>> {
-  const names: Record<string, string> = {};
-  if (contactIds.length === 0) return names;
+export interface ContactMeta {
+  name: string;
+  title: string | null;
+  dm: boolean; // decision-maker (by seniority / job title)
+}
+
+// Decision-maker job titles (auto/dealership-aware) + senior seniority signals.
+const DM_TITLE = /\b(owner|co-?founder|founder|ceo|coo|cfo|cto|cmo|cio|chief|president|vice\s?president|vp|svp|evp|director|head|principal|partner|gm|general\s?manager|managing|proprietor|dealer principal|managing director|md)\b/i;
+const DM_SENIORITY = /exec|owner|chief|director|c.?suite|principal|founder|president|vice/i;
+
+function isDecisionMaker(title: string, seniority: string): boolean {
+  return (!!title && DM_TITLE.test(title)) || (!!seniority && DM_SENIORITY.test(seniority));
+}
+
+/** Resolve display names + job title + decision-maker flag for contacts. */
+async function resolveContactMeta(contactIds: string[]): Promise<Record<string, ContactMeta>> {
+  const meta: Record<string, ContactMeta> = {};
+  if (contactIds.length === 0) return meta;
   for (const ids of chunk(contactIds, OBJ_BATCH)) {
-    const body = { properties: ["firstname", "lastname", "email"], inputs: ids.map((id) => ({ id })) };
+    const body = { properties: ["firstname", "lastname", "email", "jobtitle", "seniority"], inputs: ids.map((id) => ({ id })) };
     const res = await hubspotPost<ObjResp>(`/crm/v3/objects/contacts/batch/read`, body);
     for (const r of res.results ?? []) {
       const p = r.properties ?? {};
       const full = [p.firstname, p.lastname].filter(Boolean).join(" ").trim();
-      names[r.id] = full || p.email?.trim() || `Contact ${r.id}`;
+      const title = (p.jobtitle ?? "").trim();
+      meta[r.id] = {
+        name: full || p.email?.trim() || `Contact ${r.id}`,
+        title: title || null,
+        dm: isDecisionMaker(title, (p.seniority ?? "").trim()),
+      };
     }
     await delay(RATE_LIMIT_DELAY_MS);
   }
-  return names;
+  return meta;
 }
 
 function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
@@ -119,7 +140,8 @@ function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
 export interface ResolveResult {
   activities: Activity[];
   companyNames: Record<string, string>;
-  contactNames: Record<string, string>;
+  companyLifecycle: Record<string, string | null>;
+  contactMeta: Record<string, ContactMeta>;
 }
 
 export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveResult> {
@@ -188,16 +210,19 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
       timestampMs: a.timestampMs,
       disposition: a.disposition,
       emailStatus: a.emailStatus,
+      emailOpened: a.emailOpened,
+      emailReplied: a.emailReplied,
+      emailClicked: a.emailClicked,
       contactIds,
       companyIds,
     };
   });
 
-  console.log(`Resolving ${usedCompanyIds.size} company names…`);
-  const companyNames = await resolveCompanyNames([...usedCompanyIds]);
+  console.log(`Resolving ${usedCompanyIds.size} company names + lifecycle…`);
+  const { names: companyNames, lifecycle: companyLifecycle } = await resolveCompanies([...usedCompanyIds]);
 
-  console.log(`Resolving ${allContactIds.size} contact names…`);
-  const contactNames = await resolveContactNames([...allContactIds]);
+  console.log(`Resolving ${allContactIds.size} contact names + titles…`);
+  const contactMeta = await resolveContactMeta([...allContactIds]);
 
-  return { activities, companyNames, contactNames };
+  return { activities, companyNames, companyLifecycle, contactMeta };
 }

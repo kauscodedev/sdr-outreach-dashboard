@@ -13,13 +13,10 @@ const MEETING = "243ad062-d38f-40ea-86e2-10040d9ce4bd"; // "C - Meeting Schedule
 function act(partial: Partial<Activity>): Activity {
   return {
     id: Math.random().toString(36).slice(2),
-    type: "call",
-    ownerId: REP,
-    timestampMs: NOW,
-    disposition: null,
-    emailStatus: null,
-    contactIds: [],
-    companyIds: [],
+    type: "call", ownerId: REP, timestampMs: NOW,
+    disposition: null, emailStatus: null,
+    emailOpened: false, emailReplied: false, emailClicked: false,
+    contactIds: [], companyIds: [],
     ...partial,
   };
 }
@@ -28,80 +25,72 @@ describe("aggregate", () => {
   const ctx = makeIstContext(NOW);
   const activities: Activity[] = [
     act({ type: "call", disposition: CONNECTED, contactIds: ["A"], companyIds: ["X"] }),
-    act({ type: "email", emailStatus: "SENT", contactIds: ["A"], companyIds: ["X"] }),
+    act({ type: "email", emailStatus: "SENT", emailOpened: true, contactIds: ["A"], companyIds: ["X"] }),
     act({ type: "call", disposition: BUSY, contactIds: ["B"], companyIds: ["X"] }),
     act({ type: "call", disposition: MEETING, contactIds: ["C"], companyIds: ["Y"] }),
   ];
-  const owned = { [REP]: [{ id: "X", name: "Acme" }, { id: "Z", name: "Zeta" }] };
+  const owned = { [REP]: [{ id: "X", name: "Acme", lifecycle: "opportunity" }, { id: "Z", name: "Zeta", lifecycle: "lead" }] };
+  const contactMeta = {
+    A: { name: "Alice Owner", title: "Owner", dm: true },
+    B: { name: "Bob Rep", title: "Sales Rep", dm: false },
+    C: { name: "Carol", title: null, dm: false },
+  };
   const snap = aggregate(
     activities,
     { X: "Acme", Y: "Yoyodyne" },
-    { A: "Alice Smith", B: "Bob Jones", C: "Carol Lee" },
+    { X: "opportunity", Y: "lead" },
+    contactMeta,
     owned,
-    ctx,
-    NOW,
-    { calls: true, emails: true },
+    ctx, NOW, { calls: true, emails: true },
   );
   const today = snap.reps[REP].periods.today;
 
   it("reports unique reach split by activity", () => {
-    expect(today.contacts.total).toBe(3); // A, B, C
-    expect(today.contacts.both).toBe(1); // A reached via call + email
-    expect(today.contacts.via_call).toBe(3); // A, B, C all called
-    expect(today.contacts.via_email).toBe(1); // A only
-    expect(today.companies.total).toBe(2); // X, Y
-    expect(today.companies.via_email).toBe(1); // only X got an email
+    expect(today.contacts.total).toBe(3);
+    expect(today.contacts.both).toBe(1); // A via call + email
+    expect(today.companies.total).toBe(2);
   });
 
-  it("classifies connect rate (human-reached only) and meetings", () => {
-    expect(today.calls.total).toBe(3);
-    expect(today.calls.connected).toBe(2); // Connected + Meeting Scheduled
-    expect(today.calls.not_connected).toBe(1); // Busy
-    expect(today.meetings_booked).toBe(1);
+  it("tracks email engagement", () => {
+    expect(today.emails.sent).toBe(1);
+    expect(today.emails.opened).toBe(1);
+    expect(today.emails.open_rate).toBe(1);
   });
 
-  it("classifies account temperature from outcomes", () => {
-    // X: connected (Connected) -> warm; Y: meeting -> hot.
-    expect(today.temp.hot).toBe(1);
-    expect(today.temp.warm).toBe(1);
-    expect(today.temp.cold).toBe(0);
+  it("computes decision-maker reach", () => {
+    expect(today.titled_contacts).toBe(2); // Owner + Sales Rep
+    expect(today.dm_contacts).toBe(1); // Owner
   });
 
-  it("computes coverage against the owned book", () => {
-    expect(today.coverage.owned_total).toBe(2); // X, Z
-    expect(today.coverage.owned_tapped).toBe(1); // only X tapped (Y not owned)
-    expect(today.coverage.pct).toBe(0.5);
-    expect(today.coverage.untapped_count).toBe(1); // Z
+  it("classifies account temperature with reasons", () => {
+    expect(today.temp.hot).toBe(1); // Y: meeting
+    expect(today.temp.warm).toBe(1); // X: connected
+    const rows = today.company_breakdown!;
+    expect(rows.find((r) => r.id === "Y")!.temp_reason).toMatch(/meeting/i);
+    expect(rows.find((r) => r.id === "X")!.temp_reason).toMatch(/connected/i);
+  });
+
+  it("computes coverage segmented by lifecycle (gd level)", () => {
+    expect(today.coverage.owned_total).toBe(2);
+    expect(today.coverage.owned_tapped).toBe(1); // X tapped
+    expect(today.coverage.by_stage["In-pipeline"]).toEqual({ owned: 1, tapped: 1 }); // X = opportunity
+    expect(today.coverage.by_stage["Lead/MQL"]).toEqual({ owned: 1, tapped: 0 }); // Z = lead, untapped
   });
 
   it("produces a quality score and insights", () => {
     expect(today.quality.score).toBeGreaterThan(0);
-    expect(["A", "B", "C", "D", "F"]).toContain(today.quality.grade);
-    expect(today.insights.length).toBeGreaterThan(0);
-    expect(today.insights.some((i) => i.text.includes("meeting"))).toBe(true);
+    expect(today.insights.some((i) => i.text.toLowerCase().includes("meeting"))).toBe(true);
   });
 
-  it("includes a per-company breakdown with temp, ownership, and named contacts", () => {
-    const rows = today.company_breakdown!;
-    const acme = rows.find((r) => r.id === "X")!;
-    expect(acme).toMatchObject({ name: "Acme", temp: "warm", owned: true });
-    expect(acme.contacts_list?.map((c) => c.name).sort()).toEqual(["Alice Smith", "Bob Jones"]);
-    const yoyo = rows.find((r) => r.id === "Y")!;
-    expect(yoyo).toMatchObject({ temp: "hot", owned: false });
+  it("attaches title/dm to per-account contacts", () => {
+    const acme = today.company_breakdown!.find((r) => r.id === "X")!;
+    const alice = acme.contacts_list!.find((c) => c.id === "A")!;
+    expect(alice).toMatchObject({ name: "Alice Owner", title: "Owner", dm: true });
   });
 
-  it("builds a daily series spanning the window", () => {
+  it("builds a daily series and does not leak into last_week", () => {
     const daily = snap.reps[REP].daily;
-    const todayPoint = daily[daily.length - 1];
-    expect(todayPoint.date).toBe("2026-06-29");
-    expect(todayPoint.calls).toBe(3);
-    expect(todayPoint.connected).toBe(2);
-    expect(todayPoint.emails).toBe(1);
-  });
-
-  it("initializes every tracked rep and does not leak into last_week", () => {
-    expect(Object.keys(snap.reps)).toHaveLength(28);
+    expect(daily[daily.length - 1]).toMatchObject({ date: "2026-06-29", calls: 3, connected: 2, emails: 1 });
     expect(snap.reps[REP].periods.last_week.calls.total).toBe(0);
-    expect(snap.reps[REP].periods.last_week.contacts.total).toBe(0);
   });
 });

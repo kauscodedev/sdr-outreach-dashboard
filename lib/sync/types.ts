@@ -33,6 +33,9 @@ export interface Activity {
   timestampMs: number; // UTC epoch ms (from hs_timestamp)
   disposition: string | null; // call disposition GUID (calls only)
   emailStatus: string | null; // hs_email_status (emails only)
+  emailOpened: boolean;
+  emailReplied: boolean;
+  emailClicked: boolean;
   contactIds: string[];
   companyIds: string[];
 }
@@ -50,6 +53,12 @@ export interface EmailMetrics {
   sent: number;
   bounced: number;
   bounce_rate: number;
+  opened: number;
+  replied: number;
+  clicked: number;
+  open_rate: number;
+  reply_rate: number;
+  click_rate: number;
 }
 
 /** Unique entities (contacts or companies) tapped, split by which activity reached them. */
@@ -62,13 +71,30 @@ export interface ReachByChannel {
   via_email: number; // email_only + both
 }
 
+/** A company reference with its lifecycle stage group. */
+export interface NamedRef {
+  id: string;
+  name: string;
+  stage?: string; // lifecycle group label
+}
+
+/** Lead / In-pipeline / Converted groupings of the lifecycle stage ("gd level"). */
+export const STAGE_GROUPS = ["Converted", "In-pipeline", "Lead/MQL", "Other"] as const;
+export type StageGroup = (typeof STAGE_GROUPS)[number];
+
+export interface StageCoverage {
+  owned: number;
+  tapped: number;
+}
+
 /** Coverage of the rep's owned book (company owner = rep). */
 export interface Coverage {
   owned_total: number;
   owned_tapped: number;
   pct: number; // owned_tapped / owned_total
   untapped_count: number;
-  untapped_sample: ContactRef[]; // capped; populated for coverage periods only
+  untapped_sample: NamedRef[]; // capped; populated for coverage periods only
+  by_stage: Record<StageGroup, StageCoverage>; // owned + tapped per lifecycle group
 }
 
 /** Tapped accounts classified by engagement temperature. */
@@ -99,12 +125,14 @@ export interface Insight {
   text: string;
 }
 
+export type Temperature = "hot" | "warm" | "cold";
+
 export interface ContactRef {
   id: string;
   name: string;
+  title?: string;
+  dm?: boolean; // decision-maker
 }
-
-export type Temperature = "hot" | "warm" | "cold";
 
 export interface CompanyBreakdownRow {
   id: string;
@@ -113,6 +141,10 @@ export interface CompanyBreakdownRow {
   calls: number;
   emails: number;
   temp: Temperature;
+  temp_reason: string; // why this tier
+  stage?: string; // lifecycle group label
+  opened: number; // emails opened
+  replied: number; // emails replied
   owned: boolean; // is this company in the rep's owned book?
   contacts_list?: ContactRef[]; // who, with HubSpot record links (narrow periods)
 }
@@ -137,6 +169,9 @@ export interface PeriodMetrics {
   avg_contacts_per_company: number;
   multitouch_contacts: number; // contacts touched 2+ times
   multitouch_accounts: number; // companies touched 2+ times
+  // Decision-maker reach (by seniority / job title)
+  dm_contacts: number; // unique decision-maker contacts tapped
+  titled_contacts: number; // unique tapped contacts that have a job title
   // Coverage of owned book
   coverage: Coverage;
   // Account temperature (tapped accounts)
