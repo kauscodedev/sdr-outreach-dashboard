@@ -43,23 +43,18 @@ import {
 const DAY_MS = 86_400_000;
 const UNTAPPED_SAMPLE_CAP = 200;
 
-/** Map a raw lifecyclestage value to a coarse pipeline group ("gd level"). */
-function stageGroup(lifecycle: string | null | undefined): StageGroup {
-  switch (lifecycle) {
-    case "customer":
-    case "evangelist":
-      return "Converted";
-    case "salesqualifiedlead":
-    case "opportunity":
-      return "In-pipeline";
-    case "lead":
-    case "marketingqualifiedlead":
-    case "subscriber":
-    case "1816032986": // Prospect
-    case "1817479910": // Assigned
-      return "Lead/MQL";
-    default:
-      return "Other";
+/**
+ * Map a raw `lifecycle_stage_gd_level` value to a StageGroup bucket (case-insensitive).
+ * This is HubSpot's dedicated GD-level pipeline stage — already rolled up to the group —
+ * so no per-rooftop furthest-along derivation is needed. "Other" catches empty/unknown.
+ */
+function normalizeGdStage(raw: string | null | undefined): StageGroup {
+  switch ((raw ?? "").trim().toLowerCase()) {
+    case "prospect": return "Prospect";
+    case "in pipeline": return "In Pipeline";
+    case "contract closed": return "Contract Closed";
+    case "drop off": return "Drop Off";
+    default: return "Other";
   }
 }
 
@@ -229,7 +224,7 @@ function finalize(
   acc: Acc,
   period: PeriodKey,
   companyNames: Record<string, string>,
-  companyLifecycle: Record<string, string | null>,
+  companyGdStage: Record<string, string | null>,
   contactMeta: Record<string, ContactMeta>,
   ownedSet: Set<string>,
 ): PeriodMetrics {
@@ -305,7 +300,7 @@ function finalize(
         emails: s.emails,
         temp: temperatureOf(s),
         temp_reason: temperatureReason(s),
-        stage: stageGroup(companyLifecycle[id]),
+        stage: normalizeGdStage(companyGdStage[id]),
         opened: s.opened,
         replied: s.replied,
         owned: ownedSet.has(id),
@@ -321,15 +316,6 @@ function finalize(
 }
 
 // ── Cumulative owned-book coverage (GD/Single units) ───────────────────────────────
-
-const STAGE_RANK: Record<StageGroup, number> = { Converted: 0, "In-pipeline": 1, "Lead/MQL": 2, Other: 3 };
-
-/** Furthest-along stage among a unit's rooftops (a GD is as advanced as its best rooftop). */
-function furthestStage(stages: StageGroup[]): StageGroup {
-  let best: StageGroup = "Other";
-  for (const s of stages) if (STAGE_RANK[s] < STAGE_RANK[best]) best = s;
-  return best;
-}
 
 function pickDealership(rooftops: OwnedCompany[]): DealershipType {
   for (const r of rooftops) {
@@ -368,7 +354,7 @@ function bookInsights(b: BookCoverage): Insight[] {
   if (b.pct < 0.5) out.push({ level: "warn", text: `⚠ ${untapped} of ${b.units_total} owned accounts untapped (${pct(b.pct)} covered)` });
   else out.push({ level: "good", text: `✓ ${pct(b.pct)} of owned accounts tapped` });
 
-  const pipe = b.by_stage["In-pipeline"];
+  const pipe = b.by_stage["In Pipeline"];
   if (pipe.total > 0 && pipe.tapped / pipe.total < 0.5) {
     out.push({ level: "warn", text: `🎯 Only ${pct(pipe.tapped / pipe.total)} of in-pipeline accounts tapped` });
   }
@@ -407,7 +393,8 @@ function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>)
     const tapped = u.rooftops.some((r) => everTapped.has(r.id));
     if (tapped) units_tapped++;
 
-    const stage = furthestStage(u.rooftops.map((r) => stageGroup(r.lifecycle)));
+    // GD-level stage is consistent across a group's rooftops; take the first non-empty.
+    const stage = normalizeGdStage(u.rooftops.map((r) => r.gdStage).find(Boolean) ?? null);
     bump(by_stage[stage], tapped);
     bump(by_dealership[pickDealership(u.rooftops)], tapped);
     bump(by_segment[pickSegment(u.rooftops)], tapped);
@@ -432,7 +419,7 @@ function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>)
 export function aggregate(
   activities: Activity[],
   companyNames: Record<string, string>,
-  companyLifecycle: Record<string, string | null>,
+  companyGdStage: Record<string, string | null>,
   contactMeta: Record<string, ContactMeta>,
   ownedCompanies: Record<string, OwnedCompany[]>,
   ctx: EtContext,
@@ -489,7 +476,7 @@ export function aggregate(
     const ownedList = ownedCompanies[ownerId] ?? [];
     const ownedSet = ownedSets.get(ownerId)!;
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
-    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyLifecycle, contactMeta, ownedSet);
+    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyGdStage, contactMeta, ownedSet);
 
     const dmap = dailyAcc.get(ownerId)!;
     const daily: DailyPoint[] = windowDates.map((date) => {

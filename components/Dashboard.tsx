@@ -36,9 +36,10 @@ const GRADE_GRAD: Record<string, string> = {
 };
 
 const STAGE_CHIP: Record<StageGroup, string> = {
-  Converted: "bg-emerald-100 text-emerald-700",
-  "In-pipeline": "bg-violet-100 text-violet-700",
-  "Lead/MQL": "bg-slate-100 text-slate-600",
+  Prospect: "bg-slate-100 text-slate-600",
+  "In Pipeline": "bg-violet-100 text-violet-700",
+  "Contract Closed": "bg-emerald-100 text-emerald-700",
+  "Drop Off": "bg-rose-100 text-rose-700",
   Other: "bg-slate-50 text-slate-400",
 };
 const TEMP_CHIP: Record<string, string> = { hot: "bg-gradient-to-br from-rose-500 to-orange-500 text-white", warm: "bg-amber-400 text-white", cold: "bg-sky-400 text-white" };

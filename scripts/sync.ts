@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   );
 
   const raw = await pullActivities(pullStartMs, ctx.nowMs, caps);
-  const { activities, companyNames, companyLifecycle, contactMeta } = await resolveAssociations(raw);
+  const { activities, companyNames, companyGdStage, contactMeta } = await resolveAssociations(raw);
 
   // Coverage denominator: each rep's owned company book (with lifecycle).
   let ownedCompanies: Awaited<ReturnType<typeof pullOwnedCompanies>> = {};
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
     console.warn("Could not pull owned companies (coverage will be empty):", err instanceof Error ? err.message : err);
   }
 
-  const snapshot = aggregate(activities, companyNames, companyLifecycle, contactMeta, ownedCompanies, ctx, Date.now(), caps);
+  const snapshot = aggregate(activities, companyNames, companyGdStage, contactMeta, ownedCompanies, ctx, Date.now(), caps);
 
   const json = JSON.stringify(snapshot, null, 2);
   const outPath = path.join(process.cwd(), "data", "snapshot.json");

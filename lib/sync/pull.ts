@@ -152,7 +152,7 @@ function toMs(hsTimestamp: string | null): number {
 export interface OwnedCompany {
   id: string;
   name: string;
-  lifecycle: string | null; // raw lifecyclestage value
+  gdStage: string | null; // lifecycle_stage_gd_level — the GD-level pipeline stage
   gdId: string | null; // gd_id — rooftop → Group Dealership key
   isGroup: boolean; // is_this_is_a_part_of_group_dealership_ === "true"
   groupName: string | null; // dealership_group_name (human label)
@@ -177,7 +177,7 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
         filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }] }],
         sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
         properties: [
-          "name", "lifecyclestage", "gd_id",
+          "name", "lifecycle_stage_gd_level", "gd_id",
           "is_this_is_a_part_of_group_dealership_", "dealership_group_name",
           "market_segment", "type_of_dealership",
         ],
@@ -189,7 +189,7 @@ export async function pullOwnedCompanies(): Promise<Record<string, OwnedCompany[
         companies.push({
           id: r.id,
           name: r.properties.name?.trim() || `Company ${r.id}`,
-          lifecycle: r.properties.lifecyclestage ?? null,
+          gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
           gdId: r.properties.gd_id?.trim() || null,
           isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
           groupName: r.properties.dealership_group_name?.trim() || null,

@@ -25,7 +25,7 @@ function act(partial: Partial<Activity>): Activity {
 
 function own(p: Partial<OwnedCompany> & { id: string }): OwnedCompany {
   return {
-    name: p.id, lifecycle: null, gdId: null, isGroup: false,
+    name: p.id, gdStage: null, gdId: null, isGroup: false,
     groupName: null, segment: null, dealershipType: null, ...p,
   };
 }
@@ -43,10 +43,11 @@ describe("aggregate", () => {
   // Owned book: two singles (X tapped, Z untapped) + one GD of two rooftops (G1 tapped, G2 not).
   const owned = {
     [REP]: [
-      own({ id: "X", name: "Acme", lifecycle: "opportunity", segment: "mm_single", dealershipType: "Independent" }),
-      own({ id: "Z", name: "Zeta", lifecycle: "lead", segment: "mm_single" }),
-      own({ id: "G1", name: "Group A", lifecycle: "opportunity", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
-      own({ id: "G2", name: "Group B", lifecycle: "lead", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
+      own({ id: "X", name: "Acme", gdStage: "In Pipeline", segment: "mm_single", dealershipType: "Independent" }),
+      own({ id: "Z", name: "Zeta", gdStage: "Prospect", segment: "mm_single" }),
+      // GD-level stage is consistent across a group's rooftops.
+      own({ id: "G1", name: "Group A", gdStage: "In Pipeline", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
+      own({ id: "G2", name: "Group B", gdStage: "In Pipeline", gdId: "900", isGroup: true, groupName: "Big Auto Group", segment: "mm_group", dealershipType: "Franchise" }),
     ],
   };
   const contactMeta = {
@@ -57,7 +58,7 @@ describe("aggregate", () => {
   const snap = aggregate(
     activities,
     { X: "Acme", Y: "Yoyodyne", G1: "Group A" },
-    { X: "opportunity", Y: "lead" },
+    { X: "In Pipeline", Y: "Prospect" }, // companyGdStage (drives per-account chip)
     contactMeta,
     owned,
     ctx, NOW, { calls: true, emails: true },
@@ -121,9 +122,9 @@ describe("aggregate", () => {
     expect(book.by_group_kind.single).toEqual({ total: 2, tapped: 1 }); // X tapped, Z not
   });
 
-  it("segments coverage by furthest-along lifecycle stage (GD level)", () => {
-    expect(book.by_stage["In-pipeline"]).toEqual({ total: 2, tapped: 2 }); // X + GD (opp beats lead)
-    expect(book.by_stage["Lead/MQL"]).toEqual({ total: 1, tapped: 0 }); // Z only
+  it("segments coverage by GD-level lifecycle stage (lifecycle_stage_gd_level)", () => {
+    expect(book.by_stage["In Pipeline"]).toEqual({ total: 2, tapped: 2 }); // X + GD900
+    expect(book.by_stage["Prospect"]).toEqual({ total: 1, tapped: 0 }); // Z only
   });
 
   it("segments coverage by dealership type and market segment", () => {

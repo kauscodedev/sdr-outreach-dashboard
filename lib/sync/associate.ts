@@ -78,21 +78,21 @@ interface ObjResp {
   results?: { id: string; properties?: Record<string, string | null> }[];
 }
 
-/** Resolve names + lifecycle for company ids via v3 objects batch read. */
-async function resolveCompanies(companyIds: string[]): Promise<{ names: Record<string, string>; lifecycle: Record<string, string | null> }> {
+/** Resolve names + GD-level stage for company ids via v3 objects batch read. */
+async function resolveCompanies(companyIds: string[]): Promise<{ names: Record<string, string>; gdStage: Record<string, string | null> }> {
   const names: Record<string, string> = {};
-  const lifecycle: Record<string, string | null> = {};
-  if (companyIds.length === 0) return { names, lifecycle };
+  const gdStage: Record<string, string | null> = {};
+  if (companyIds.length === 0) return { names, gdStage };
   for (const ids of chunk(companyIds, OBJ_BATCH)) {
-    const body = { properties: ["name", "lifecyclestage"], inputs: ids.map((id) => ({ id })) };
+    const body = { properties: ["name", "lifecycle_stage_gd_level"], inputs: ids.map((id) => ({ id })) };
     const res = await hubspotPost<ObjResp>(`/crm/v3/objects/companies/batch/read`, body);
     for (const r of res.results ?? []) {
       names[r.id] = r.properties?.name?.trim() || `Company ${r.id}`;
-      lifecycle[r.id] = r.properties?.lifecyclestage ?? null;
+      gdStage[r.id] = r.properties?.lifecycle_stage_gd_level ?? null;
     }
     await delay(RATE_LIMIT_DELAY_MS);
   }
-  return { names, lifecycle };
+  return { names, gdStage };
 }
 
 export interface ContactMeta {
@@ -140,7 +140,7 @@ function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
 export interface ResolveResult {
   activities: Activity[];
   companyNames: Record<string, string>;
-  companyLifecycle: Record<string, string | null>;
+  companyGdStage: Record<string, string | null>;
   contactMeta: Record<string, ContactMeta>;
 }
 
@@ -218,11 +218,11 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
     };
   });
 
-  console.log(`Resolving ${usedCompanyIds.size} company names + lifecycle…`);
-  const { names: companyNames, lifecycle: companyLifecycle } = await resolveCompanies([...usedCompanyIds]);
+  console.log(`Resolving ${usedCompanyIds.size} company names + GD-level stage…`);
+  const { names: companyNames, gdStage: companyGdStage } = await resolveCompanies([...usedCompanyIds]);
 
   console.log(`Resolving ${allContactIds.size} contact names + titles…`);
   const contactMeta = await resolveContactMeta([...allContactIds]);
 
-  return { activities, companyNames, companyLifecycle, contactMeta };
+  return { activities, companyNames, companyGdStage, contactMeta };
 }

@@ -78,8 +78,11 @@ export interface NamedRef {
   stage?: string; // lifecycle group label
 }
 
-/** Lead / In-pipeline / Converted groupings of the lifecycle stage ("gd level"). */
-export const STAGE_GROUPS = ["Converted", "In-pipeline", "Lead/MQL", "Other"] as const;
+/**
+ * GD-level pipeline stages — sourced directly from the HubSpot `lifecycle_stage_gd_level`
+ * property (title-cased here). "Other" catches empty/unrecognized values. Order = display order.
+ */
+export const STAGE_GROUPS = ["Prospect", "In Pipeline", "Contract Closed", "Drop Off", "Other"] as const;
 export type StageGroup = (typeof STAGE_GROUPS)[number];
 
 /** A count pair for one coverage dimension: total units vs tapped units. */

@@ -112,10 +112,13 @@ builders in `config/hubspot.ts` (portal `242626590`, app-na2).
   (rooftops grouped by the `gd_id` company property), and a unit is "tapped" once the **owning rep**
   has ever put outbound activity on any of its rooftops. Monotonic by construction (a set only grows).
   Coverage is measured over a wide activity pull anchored at `COVERAGE_ANCHOR` (`config/hubspot.ts`) —
-  the same pulled activities also feed the 6 short periods. Segmented by lifecycle (furthest-along
-  `stageGroup`), dealership type (`type_of_dealership`), market segment (`market_segment`), and
-  GD-vs-single. A group unit requires BOTH `is_this_is_a_part_of_group_dealership_` AND a `gd_id`;
-  otherwise the rooftop is counted as a single (never dropped).
+  the same pulled activities also feed the 6 short periods. Segmented by lifecycle via HubSpot's
+  dedicated GD-level property **`lifecycle_stage_gd_level`** (`normalizeGdStage` → Prospect /
+  In Pipeline / Contract Closed / Drop Off / Other, read directly — NOT derived from the
+  rooftop-level `lifecyclestage`), plus dealership type (`type_of_dealership`), market segment
+  (`market_segment`), and GD-vs-single. A group unit requires BOTH
+  `is_this_is_a_part_of_group_dealership_` AND a `gd_id`; otherwise the rooftop is counted as a
+  single (never dropped).
 - **Insights** (`buildInsights`): rule-based good/warn callouts (low coverage, single-channel,
   shallow depth, low connect rate, high bounce, DM reach, etc.).
 
