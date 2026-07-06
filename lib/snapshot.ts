@@ -49,6 +49,7 @@ function emptyBook(): BookCoverage {
     by_dealership: { Franchise: emptyDim(), Independent: emptyDim(), Unknown: emptyDim() },
     by_segment,
     by_group_kind: { group: emptyDim(), single: emptyDim() },
+    units: [],
     untapped_sample: [],
     insights: [],
   };

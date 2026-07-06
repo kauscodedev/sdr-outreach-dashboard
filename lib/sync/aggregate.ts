@@ -20,6 +20,7 @@ import {
   Activity,
   AccountTemp,
   BookCoverage,
+  BookUnitDetail,
   CoverageDim,
   DailyPoint,
   DealershipType,
@@ -34,6 +35,8 @@ import {
   QualityScore,
   ReachByChannel,
   RepData,
+  RooftopContact,
+  RooftopDetail,
   Snapshot,
   STAGE_GROUPS,
   StageGroup,
@@ -95,6 +98,23 @@ function newAcc(): Acc {
     emailsSent: 0, emailsBounced: 0, emailsOpened: 0, emailsReplied: 0, emailsClicked: 0,
     unattributed: 0,
   };
+}
+
+/** Cumulative, owner-scoped engagement on one OWNED rooftop (feeds the Book Explorer). */
+interface RoofAcc {
+  calls: number;
+  emails: number;
+  connected: number;
+  lastMs: number;
+  meeting: boolean;
+  highIntent: boolean;
+  opened: number;
+  replied: number;
+  contacts: Map<string, { calls: number; emails: number }>;
+}
+
+function newRoofAcc(): RoofAcc {
+  return { calls: 0, emails: 0, connected: 0, lastMs: 0, meeting: false, highIntent: false, opened: 0, replied: 0, contacts: new Map() };
 }
 
 function applyActivity(acc: Acc, a: Activity): void {
@@ -361,12 +381,29 @@ function bookInsights(b: BookCoverage): Insight[] {
   return out;
 }
 
+/** Build the top-5 engaged-contact list for one rooftop's accumulator. */
+function rooftopContacts(stat: RoofAcc | undefined, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
+  if (!stat) return [];
+  return [...stat.contacts.entries()]
+    .map(([id, c]) => {
+      const meta = contactMeta[id];
+      return { id, name: meta?.name ?? `Contact ${id}`, title: meta?.title ?? undefined, dm: meta?.dm, calls: c.calls, emails: c.emails };
+    })
+    .sort((a, b) => (b.calls + b.emails) - (a.calls + a.emails))
+    .slice(0, 5);
+}
+
 /**
  * Roll the rep's owned rooftops into GD/Single units and compute cumulative coverage.
  * A group unit requires BOTH the group flag AND a gd_id; anything else is a single unit
  * (group-flagged rooftops with no gd_id fall back to single — counted, never dropped).
  */
-function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>): BookCoverage {
+function computeBookCoverage(
+  ownedList: OwnedCompany[],
+  everTapped: Set<string>,
+  roofStats: Map<string, RoofAcc>,
+  contactMeta: Record<string, ContactMeta>,
+): BookCoverage {
   const units = new Map<string, { name: string; isGroup: boolean; rooftops: OwnedCompany[] }>();
   for (const c of ownedList) {
     const isGroupUnit = c.isGroup && !!c.gdId;
@@ -382,10 +419,11 @@ function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>)
   const by_segment = emptySegmentDims();
   const by_group_kind = { group: emptyDim(), single: emptyDim() };
   const untapped_sample: NamedRef[] = [];
+  const unitDetails: BookUnitDetail[] = [];
 
   let units_total = 0, units_tapped = 0, gds = 0, singles = 0, rooftops_total = 0;
 
-  for (const u of units.values()) {
+  for (const [key, u] of units.entries()) {
     units_total++;
     rooftops_total += u.rooftops.length;
     if (u.isGroup) gds++; else singles++;
@@ -395,21 +433,69 @@ function computeBookCoverage(ownedList: OwnedCompany[], everTapped: Set<string>)
 
     // GD-level stage is consistent across a group's rooftops; take the first non-empty.
     const stage = normalizeGdStage(u.rooftops.map((r) => r.gdStage).find(Boolean) ?? null);
+    const dealership = pickDealership(u.rooftops);
+    const segment = pickSegment(u.rooftops);
     bump(by_stage[stage], tapped);
-    bump(by_dealership[pickDealership(u.rooftops)], tapped);
-    bump(by_segment[pickSegment(u.rooftops)], tapped);
+    bump(by_dealership[dealership], tapped);
+    bump(by_segment[segment], tapped);
     bump(u.isGroup ? by_group_kind.group : by_group_kind.single, tapped);
 
     if (!tapped && untapped_sample.length < UNTAPPED_SAMPLE_CAP) {
       untapped_sample.push({ id: u.rooftops[0].id, name: u.name, stage });
     }
+
+    const rooftops: RooftopDetail[] = u.rooftops.map((r) => {
+      const rTapped = everTapped.has(r.id);
+      const stat = roofStats.get(r.id);
+      const calls = stat?.calls ?? 0;
+      const emails = stat?.emails ?? 0;
+      const connected = stat?.connected ?? 0;
+      const last_ms = stat && stat.lastMs ? stat.lastMs : null;
+
+      let temp: Temperature;
+      let temp_reason: string;
+      if (!rTapped) {
+        temp = "cold";
+        temp_reason = "Untouched";
+      } else {
+        const cs: CompanyStat = {
+          contacts: new Set(stat ? stat.contacts.keys() : []),
+          calls, emails, connected,
+          meeting: stat?.meeting ?? false,
+          highIntent: stat?.highIntent ?? false,
+          opened: stat?.opened ?? 0,
+          replied: stat?.replied ?? 0,
+        };
+        temp = temperatureOf(cs);
+        temp_reason = temperatureReason(cs);
+      }
+
+      return {
+        id: r.id, name: r.name, tapped: rTapped, calls, emails, connected, last_ms, temp, temp_reason,
+        contacts: rooftopContacts(stat, contactMeta),
+      };
+    });
+
+    rooftops.sort((a, b) => {
+      if (a.tapped !== b.tapped) return a.tapped ? -1 : 1;
+      if (a.tapped) return (b.calls + b.emails) - (a.calls + a.emails);
+      return a.name.localeCompare(b.name);
+    });
+
+    unitDetails.push({ key, name: u.name, isGroup: u.isGroup, stage, dealership, segment, tapped, rooftops });
   }
+
+  unitDetails.sort((a, b) => {
+    if (a.isGroup !== b.isGroup) return a.isGroup ? -1 : 1;
+    if (b.rooftops.length !== a.rooftops.length) return b.rooftops.length - a.rooftops.length;
+    return a.name.localeCompare(b.name);
+  });
 
   const book: BookCoverage = {
     units_total, units_tapped,
     pct: units_total ? round(units_tapped / units_total, 3) : 0,
     rooftops_total, gds, singles,
-    by_stage, by_dealership, by_segment, by_group_kind, untapped_sample,
+    by_stage, by_dealership, by_segment, by_group_kind, units: unitDetails, untapped_sample,
     insights: [],
   };
   book.insights = bookInsights(book);
@@ -430,6 +516,7 @@ export function aggregate(
   const dailyAcc = new Map<string, Map<string, { calls: number; connected: number; emails: number }>>();
   const ownedSets = new Map<string, Set<string>>();
   const everTapped = new Map<string, Set<string>>();
+  const bookStat = new Map<string, Map<string, RoofAcc>>();
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = new Map<PeriodKey, Acc>();
     for (const p of PERIOD_KEYS) byPeriod.set(p, newAcc());
@@ -437,6 +524,7 @@ export function aggregate(
     dailyAcc.set(ownerId, new Map());
     ownedSets.set(ownerId, new Set((ownedCompanies[ownerId] ?? []).map((c) => c.id)));
     everTapped.set(ownerId, new Set());
+    bookStat.set(ownerId, new Map());
   }
 
   // totals reflect the short (display) window; everTapped uses the full anchored set.
@@ -450,7 +538,30 @@ export function aggregate(
     // Cumulative, owner-scoped tapped set (a company counts only if its owner acted on it).
     const owned = ownedSets.get(a.ownerId)!;
     const tappedSet = everTapped.get(a.ownerId)!;
-    for (const co of a.companyIds) if (owned.has(co)) tappedSet.add(co);
+    const roofMap = bookStat.get(a.ownerId)!;
+    for (const co of a.companyIds) {
+      if (!owned.has(co)) continue;
+      tappedSet.add(co);
+
+      const racc = roofMap.get(co) ?? newRoofAcc();
+      if (a.type === "call") {
+        racc.calls++;
+        if (a.disposition && isConnected(a.disposition)) racc.connected++;
+        if (isMeeting(a.disposition)) racc.meeting = true;
+        if (isHighIntent(a.disposition)) racc.highIntent = true;
+      } else {
+        racc.emails++;
+        if (a.emailOpened) racc.opened++;
+        if (a.emailReplied) racc.replied++;
+      }
+      racc.lastMs = Math.max(racc.lastMs, a.timestampMs);
+      for (const cid of a.contactIds) {
+        const ct = racc.contacts.get(cid) ?? { calls: 0, emails: 0 };
+        if (a.type === "call") ct.calls++; else ct.emails++;
+        racc.contacts.set(cid, ct);
+      }
+      roofMap.set(co, racc);
+    }
 
     // Daily trend + display totals: only within the short window.
     if (etParts(a.timestampMs).dayIndex >= ctx.dailyStartIndex) {
@@ -484,7 +595,7 @@ export function aggregate(
       return { date, calls: d.calls, connected: d.connected, emails: d.emails };
     });
 
-    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!);
+    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta);
     reps[ownerId] = { periods, daily, book };
   }
 
