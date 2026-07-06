@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { isAllowedEmail } from "../../../lib/auth/domain";
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
@@ -21,13 +22,15 @@ export async function GET(req: NextRequest) {
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) return NextResponse.redirect(`${origin}/login?error=auth`);
 
-  // Belt-and-braces: the hd hint is client-side only — enforce the domain here.
-  const email = data.user?.email ?? "";
-  if (!email.toLowerCase().endsWith("@spyne.ai")) {
+  // Belt-and-braces: middleware is the authoritative domain gate; this check
+  // stops non-spyne sessions at mint time. signOut() cannot clear cookies that
+  // weren't in the REQUEST, so explicitly expire everything set on `res`.
+  if (!isAllowedEmail(data.user?.email)) {
     await supabase.auth.signOut();
     const reject = NextResponse.redirect(`${origin}/login?error=domain`);
-    // signOut clears cookies on `res`; copy them onto the reject response.
-    res.cookies.getAll().forEach((c) => reject.cookies.set(c.name, c.value));
+    res.cookies.getAll().forEach((c) =>
+      reject.cookies.set(c.name, "", { maxAge: 0, expires: new Date(0), path: "/" }),
+    );
     return reject;
   }
   return res;

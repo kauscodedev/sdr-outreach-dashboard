@@ -1,18 +1,28 @@
 /**
- * Auth gate: every route requires a Supabase session except /login, /auth/*,
- * and static assets. Also refreshes the session cookie on each request.
- * If Supabase env is missing entirely (e.g. fresh clone), requests pass through
- * so local dev without auth config still works.
+ * Auth gate: every route requires a Supabase session belonging to an
+ * @spyne.ai account. Middleware is the single source of truth for BOTH
+ * session presence and domain membership (the OAuth callback's check is
+ * belt-and-braces only).
+ *
+ * Env handling: missing Supabase env FAILS CLOSED in production (503) and
+ * passes through only in local dev, so a misconfigured deploy can never
+ * silently publish the dashboard.
  */
 import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
+import { isAllowedEmail } from "./lib/auth/domain";
 
 const PUBLIC_PATHS = ["/login", "/auth"];
 
 export async function middleware(req: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) return NextResponse.next(); // unconfigured → no gate (dev fallback)
+  if (!url || !key) {
+    if (process.env.NODE_ENV === "production") {
+      return new NextResponse("Auth not configured", { status: 503 });
+    }
+    return NextResponse.next(); // local dev without auth config
+  }
 
   let res = NextResponse.next({ request: req });
   const supabase = createServerClient(url, key, {
@@ -27,16 +37,21 @@ export async function middleware(req: NextRequest) {
   });
 
   const { data: { user } } = await supabase.auth.getUser();
+  const allowed = !!user && isAllowedEmail(user.email);
   const path = req.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path === p || path.startsWith(`${p}/`));
 
-  if (!user && !isPublic) {
+  if (!allowed && !isPublic) {
+    // API callers get a clean 401 instead of a redirect-to-HTML.
+    if (path.startsWith("/api/")) {
+      return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+    }
     const login = req.nextUrl.clone();
     login.pathname = "/login";
     login.search = "";
     return NextResponse.redirect(login);
   }
-  if (user && path === "/login") {
+  if (allowed && path === "/login") {
     const home = req.nextUrl.clone();
     home.pathname = "/";
     home.search = "";
@@ -46,6 +61,7 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Everything except Next internals and common static files.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|ico|webp)$).*)"],
+  // Gate everything except Next internals + favicon. Deliberately NO file-extension
+  // exclusions: they could exempt crafted /api/... paths from the gate.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
