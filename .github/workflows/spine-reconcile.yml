@@ -1,0 +1,21 @@
+name: Spine nightly reconcile
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+permissions: {}
+concurrency: spine-sync
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npm run sync:reconcile
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
