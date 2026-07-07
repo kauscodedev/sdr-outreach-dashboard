@@ -19,6 +19,12 @@ function sb(): SupabaseClient {
 }
 
 async function upsertBatched(table: string, rows: object[], onConflict: string) {
+  // Dedupe on the conflict key (last wins): duplicate keys within one statement abort the whole
+  // upsert (Postgres 21000), and feeders (e.g. HubSpot search paginated on a mutable sort key)
+  // can return the same record twice.
+  const cols = onConflict.split(",");
+  const keyOf = (r: Record<string, unknown>) => cols.map((c) => String(r[c])).join(" ");
+  rows = [...new Map((rows as Record<string, unknown>[]).map((r) => [keyOf(r), r])).values()] as object[];
   for (let i = 0; i < rows.length; i += BATCH) {
     const { error } = await sb().from(table).upsert(rows.slice(i, i + BATCH), { onConflict });
     if (error) throw new Error(`[spine] upsert ${table}: ${error.message}`);
@@ -29,22 +35,40 @@ export const upsertActivities = (rows: ActivityRow[]) => upsertBatched("sdr_acti
 export const upsertCompanies = (rows: Partial<CompanyRow>[]) => upsertBatched("sdr_companies", rows as object[], "hs_id");
 export const upsertContacts = (rows: ContactRow[]) => upsertBatched("sdr_contacts", rows, "hs_id");
 
-/** Owners+teams are small (~100 rows): replace-all semantics for memberships. */
+/**
+ * Owners+teams are small (~100 rows). Upsert FIRST, then prune stale memberships — the app
+ * reads sdr_team_members live for manager scoping, so it must never be left empty mid-run.
+ */
 export async function replaceOwnersTeams(owners: OwnerRow[], teams: TeamRow[], members: TeamMemberRow[]) {
   await upsertBatched("sdr_owners", owners, "owner_id");
   await upsertBatched("sdr_teams", teams, "team_id");
-  const { error: delErr } = await sb().from("sdr_team_members").delete().neq("team_id", "");
-  if (delErr) throw new Error(`[spine] clear team_members: ${delErr.message}`);
   await upsertBatched("sdr_team_members", members, "team_id,owner_id");
+  const existing = await fetchAll<{ team_id: string; owner_id: string }>(
+    "sdr_team_members", "team_id,owner_id", ["team_id", "owner_id"]);
+  const keep = new Set(members.map((m) => `${m.team_id} ${m.owner_id}`));
+  const staleByTeam = new Map<string, string[]>();
+  for (const r of existing) {
+    if (keep.has(`${r.team_id} ${r.owner_id}`)) continue;
+    const list = staleByTeam.get(r.team_id) ?? [];
+    list.push(r.owner_id);
+    staleByTeam.set(r.team_id, list);
+  }
+  for (const [teamId, ownerIds] of staleByTeam) {
+    for (let i = 0; i < ownerIds.length; i += 200) {
+      const { error } = await sb().from("sdr_team_members").delete()
+        .eq("team_id", teamId).in("owner_id", ownerIds.slice(i, i + 200));
+      if (error) throw new Error(`[spine] prune team_members: ${error.message}`);
+    }
+  }
 }
 
 /** Owned-book reconcile: upsert current books, null out owner on rooftops no longer owned. */
-export async function reconcileOwnedCompanies(current: (CompanyRow & { owner_id: string })[]) {
+export async function reconcileOwnedCompanies(current: (Partial<CompanyRow> & { hs_id: string; owner_id: string })[]) {
   await upsertCompanies(current);
-  const { data, error } = await sb().from("sdr_companies").select("hs_id").not("owner_id", "is", null);
-  if (error) throw new Error(`[spine] owned ids: ${error.message}`);
+  const data = await fetchAll<{ hs_id: string }>("sdr_companies", "hs_id",
+    ["hs_id"], (q) => q.not("owner_id", "is", null));
   const keep = new Set(current.map((c) => c.hs_id));
-  const stale = (data ?? []).map((r) => r.hs_id).filter((id) => !keep.has(id));
+  const stale = data.map((r) => r.hs_id).filter((id) => !keep.has(id));
   for (let i = 0; i < stale.length; i += 200) {
     const { error: e } = await sb().from("sdr_companies").update({ owner_id: null })
       .in("hs_id", stale.slice(i, i + 200));
@@ -55,40 +79,52 @@ export async function reconcileOwnedCompanies(current: (CompanyRow & { owner_id:
 
 // ── sync state ────────────────────────────────────────────────────────────────
 export async function getWatermark(key: string): Promise<number> {
-  const { data, error } = await sb().from("sdr_sync_state").select("watermark_ms").eq("key", key).single();
+  const { data, error } = await sb().from("sdr_sync_state").select("watermark_ms").eq("key", key).maybeSingle();
   if (error) throw new Error(`[spine] watermark ${key}: ${error.message}`);
+  if (!data) throw new Error(`[spine] sync_state row '${key}' missing — apply supabase/sdr_schema.sql seeds`);
   return Number(data.watermark_ms) || 0;
 }
 
 export async function setSyncState(key: string, patch: {
   watermark_ms?: number; last_duration_ms?: number; last_counts?: object; notes?: string;
 }) {
+  // last_run_at is stamped from the runner's clock — skew shows in admin sync-health as-is.
   const { error } = await sb().from("sdr_sync_state")
     .update({ ...patch, last_run_at: new Date().toISOString() }).eq("key", key);
   if (error) throw new Error(`[spine] setSyncState ${key}: ${error.message}`);
 }
 
-/** Advisory lock via the 'lock' row. Returns true if acquired. */
-export async function tryLock(ttlMinutes: number): Promise<boolean> {
+/** Advisory lock via the 'lock' row. Returns the lease token (the until-ISO) if acquired, null on contention. */
+export async function tryLock(ttlMinutes: number): Promise<string | null> {
   const now = new Date();
   const until = new Date(now.getTime() + ttlMinutes * 60_000).toISOString();
+  // Expiry steal compares lock_until against this runner's clock — tolerates small clock skew.
   const { data, error } = await sb().from("sdr_sync_state")
     .update({ lock_until: until }).eq("key", "lock")
     .or(`lock_until.is.null,lock_until.lt.${now.toISOString()}`)
     .select("key");
   if (error) throw new Error(`[spine] lock: ${error.message}`);
-  return (data ?? []).length > 0;
+  return (data ?? []).length > 0 ? until : null;
 }
-export async function unlock() {
-  await sb().from("sdr_sync_state").update({ lock_until: null }).eq("key", "lock");
+/** Fenced release: only the current holder (matching lease) clears the lock. Never throws. */
+export async function unlock(lease: string): Promise<void> {
+  try {
+    const { error } = await sb().from("sdr_sync_state")
+      .update({ lock_until: null }).eq("key", "lock").eq("lock_until", lease);
+    if (error) console.warn(`[spine] unlock: ${error.message}`);
+  } catch (e) {
+    console.warn(`[spine] unlock: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // ── aggregate input + snapshot ───────────────────────────────────────────────
-async function fetchAll<T>(table: string, select: string, filter?: (q: any) => any): Promise<T[]> {
+// OFFSET-based pagination: orderBy MUST be a unique total order (include the PK), and PAGE must not exceed PostgREST max-rows (default 1000) or termination breaks.
+async function fetchAll<T>(table: string, select: string, orderBy: string[], filter?: (q: any) => any): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
     let q = sb().from(table).select(select).range(from, from + PAGE - 1);
     if (filter) q = filter(q);
+    for (const col of orderBy) q = q.order(col, { ascending: true });
     const { data, error } = await q;
     if (error) throw new Error(`[spine] fetch ${table}: ${error.message}`);
     out.push(...(data as T[]));
@@ -107,10 +143,10 @@ export interface StoreForAggregate {
 export async function loadStoreForAggregate(anchorMs: number): Promise<StoreForAggregate> {
   const actRows = await fetchAll<ActivityRow>("sdr_activities",
     "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
-    (q) => q.gte("ts_ms", anchorMs).order("ts_ms", { ascending: true }));
+    ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", anchorMs));
   const coRows = await fetchAll<CompanyRow>("sdr_companies",
-    "hs_id,name,gd_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type");
-  const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm");
+    "hs_id,name,gd_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type", ["hs_id"]);
+  const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm", ["hs_id"]);
 
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};
@@ -128,6 +164,7 @@ export async function loadStoreForAggregate(anchorMs: number): Promise<StoreForA
 }
 
 export async function saveSnapshot(snap: Snapshot) {
+  // generated_at is stamped from the runner's clock — skew shows in admin sync-health as-is.
   const { error } = await sb().from("sdr_snapshots")
     .upsert({ id: 1, data: snap as unknown as object, generated_at: new Date().toISOString() }, { onConflict: "id" });
   if (error) throw new Error(`[spine] saveSnapshot: ${error.message}`);

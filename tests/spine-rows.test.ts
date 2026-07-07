@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { activityToRow, rowToActivity, rowToOwnedCompany, nextWatermark } from "../lib/spine/rows";
-import { ActivityRow, CompanyRow } from "../lib/spine/types";
+import { activityToRow, rowToActivity, rowToContactMeta, rowToOwnedCompany, nextWatermark } from "../lib/spine/rows";
+import { ActivityRow, CompanyRow, ContactRow } from "../lib/spine/types";
 
 const act = { id: "42", type: "call" as const, ownerId: "69016314", timestampMs: 1000,
   disposition: "g", emailStatus: null, emailOpened: false, emailReplied: false,
@@ -19,6 +19,10 @@ describe("activity mappers", () => {
     expect(a.contactIds).toEqual([]);
     expect(a.companyIds).toEqual([]);
   });
+  it("tolerates a jsonb array arriving as a non-array object", () => {
+    const row = { ...activityToRow(act, 0), contact_ids: {} } as unknown as ActivityRow;
+    expect(rowToActivity(row).contactIds).toEqual([]);
+  });
 });
 
 describe("rowToOwnedCompany", () => {
@@ -33,6 +37,13 @@ describe("rowToOwnedCompany", () => {
     const row: CompanyRow = { hs_id: "9", name: null, gd_stage: null, owner_id: null, gd_id: null,
       is_group: false, group_name: null, segment: null, dealership_type: null, hs_lastmodified_ms: null };
     expect(rowToOwnedCompany(row).name).toBe("Company 9");
+  });
+});
+
+describe("rowToContactMeta", () => {
+  it("falls back name to Contact <id> and coerces dm to a strict boolean", () => {
+    const row = { hs_id: "7", name: null, title: null, dm: 1 } as unknown as ContactRow;
+    expect(rowToContactMeta(row)).toEqual({ name: "Contact 7", title: null, dm: true });
   });
 });
 
