@@ -30,7 +30,7 @@ export default function CallsDrilldown({ payload, failed }: { payload: RepCallsP
           const isOpen = open === c.callId;
           return (
             <div key={c.callId} className="rounded-xl border border-slate-100">
-              <button onClick={() => setOpen(isOpen ? null : c.callId)} className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-sm">
+              <button onClick={() => setOpen(isOpen ? null : c.callId)} aria-expanded={isOpen} className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-sm">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="text-slate-400">{isOpen ? "▾" : "▸"}</span>
                   <span className="shrink-0 rounded-lg bg-indigo-50 px-1.5 py-0.5 text-xs font-bold tabular-nums text-indigo-700">{fmt1(c.overall)}</span>

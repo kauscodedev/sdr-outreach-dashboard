@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
@@ -12,6 +12,8 @@ import { CoachingSnapshot } from "../lib/callquality/types";
 import RepDrawer from "./RepDrawer";
 import GdExplorer from "./GdExplorer";
 import CallQualityCard from "./CallQualityCard";
+import LogoutButton from "./LogoutButton";
+import { STAGE_CHIP, TEMP_CHIP, TEMP_ICON } from "./ui-tokens";
 
 const CONNECTED_LABELS = new Set(Object.values(CONNECTED_DISPOSITIONS));
 
@@ -39,22 +41,13 @@ const GRADE_GRAD: Record<string, string> = {
   "—": "from-slate-200 to-slate-200 text-slate-400",
 };
 
-const STAGE_CHIP: Record<StageGroup, string> = {
-  Prospect: "bg-slate-100 text-slate-600",
-  "In Pipeline": "bg-violet-100 text-violet-700",
-  "Contract Closed": "bg-emerald-100 text-emerald-700",
-  "Drop Off": "bg-rose-100 text-rose-700",
-  Other: "bg-slate-50 text-slate-400",
-};
-const TEMP_CHIP: Record<string, string> = { hot: "bg-gradient-to-br from-rose-500 to-orange-500 text-white", warm: "bg-amber-400 text-white", cold: "bg-sky-400 text-white" };
-const TEMP_ICON: Record<string, string> = { hot: "🔥", warm: "🌤", cold: "🧊" };
-
 export default function Dashboard({ snapshot, coaching }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot> }) {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
   const [repFilter, setRepFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("touches");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [drawerRep, setDrawerRep] = useState<string | null>(null);
+  const closeDrawer = useCallback(() => setDrawerRep(null), []);
 
   const allRows = useMemo<Row[]>(() =>
     Object.entries(snapshot.reps).map(([ownerId, data]) => {
@@ -105,12 +98,13 @@ export default function Dashboard({ snapshot, coaching }: { snapshot: Snapshot; 
     <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-3xl font-black tracking-tight text-transparent">
+          <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-2xl font-black tracking-tight text-transparent sm:text-3xl">
             SDR Outreach Coverage
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
+          <p className="mt-1 hidden text-sm text-slate-500 sm:block">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
         </div>
-        <div className="text-right text-xs text-slate-500">
+        <div className="flex flex-col items-end gap-1 text-right text-xs text-slate-500">
+          <LogoutButton />
           <div>Refreshed <span className="font-semibold text-blue-600">{etStamp(snapshot.generated_at_utc)}</span></div>
           <div>{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
         </div>
@@ -181,9 +175,9 @@ export default function Dashboard({ snapshot, coaching }: { snapshot: Snapshot; 
             title={r.name}
             badge={<GradeBadge grade={r.m.quality.grade} score={r.m.quality.score} />}
             subtitle={PERIOD_LABELS[period]}
-            onClose={() => setDrawerRep(null)}
+            onClose={closeDrawer}
           >
-            <Scorecard data={r.data} m={r.m} period={period} name={r.name} coach={coaching[drawerRep]} ownerId={drawerRep} />
+            <Scorecard key={drawerRep} data={r.data} m={r.m} period={period} name={r.name} coach={coaching[drawerRep]} ownerId={drawerRep} />
           </RepDrawer>
         ) : null;
       })()}

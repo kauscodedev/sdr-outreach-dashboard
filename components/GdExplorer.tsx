@@ -10,16 +10,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { BookCoverage, BookUnitDetail, MARKET_SEGMENT_LABELS } from "../lib/sync/types";
 import { companyUrl, contactUrl } from "../config/hubspot";
+import { STAGE_CHIP, TEMP_ICON } from "./ui-tokens";
 
 const fmt = (n: number) => n.toLocaleString("en-IN");
-const TEMP_ICON: Record<string, string> = { hot: "🔥", warm: "🌤", cold: "🧊" };
-const STAGE_CHIP: Record<string, string> = {
-  Prospect: "bg-slate-100 text-slate-600",
-  "In Pipeline": "bg-violet-100 text-violet-700",
-  "Contract Closed": "bg-emerald-100 text-emerald-700",
-  "Drop Off": "bg-rose-100 text-rose-700",
-  Other: "bg-slate-50 text-slate-400",
-};
 
 function etDay(ms: number | null): string {
   if (!ms) return "—";
@@ -85,7 +78,7 @@ export default function GdExplorer({ ownerId, book }: { ownerId: string; book: B
             const tappedRoofs = u.rooftops.filter((r) => r.tapped).length;
             return (
               <div key={u.key} className={`rounded-xl border ${u.tapped ? "border-slate-100" : "border-amber-200 bg-amber-50/40"}`}>
-                <button onClick={() => setOpenUnit(isOpen ? null : u.key)} className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-sm">
+                <button onClick={() => setOpenUnit(isOpen ? null : u.key)} aria-expanded={isOpen} className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-sm">
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="text-slate-400">{isOpen ? "▾" : "▸"}</span>
                     <span className={`shrink-0 text-xs ${u.tapped ? "text-emerald-600" : "text-amber-500"}`}>{u.tapped ? "●" : "○"}</span>

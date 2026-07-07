@@ -37,7 +37,7 @@ export default function CallQualityCard({ coach, ownerId }: { coach?: CoachingSn
         <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Call quality (BANTIC · connected calls)</h3>
         {coach?.avgBantic != null && (
           <span className="rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-2.5 py-1 text-sm font-black text-white">
-            {coach.avgBantic.toFixed(1)}<span className="text-xs font-medium opacity-80">/10 avg</span>
+            {coach.avgBantic.toFixed(1)}<span className="text-xs font-medium opacity-80">/10 weekly avg</span>
           </span>
         )}
       </div>
