@@ -1,11 +1,17 @@
 # SDR Outreach Coverage Dashboard
 
-Tracks **outbound** outreach by a fixed set of SDRs from HubSpot — how many **unique
-contacts** and **unique companies** each rep tapped, how deep they went per company,
-and the full call-outcome + email breakdown — across US/Eastern time windows
-(Today / Yesterday / Last 3 days / This week / Last week / This month).
+One-stop SDR **activity + performance** dashboard, gated behind **Google SSO (@spyne.ai only)**.
+Tracks **outbound** outreach by a fixed set of SDRs from HubSpot — unique contacts/companies
+tapped, engagement depth, call-outcome + email breakdowns — across US/Eastern time windows
+(Today / Yesterday / Last 3 days / This week / Last week / This month), plus:
 
-Built to answer one question for sales leadership: **are all accounts being tapped?**
+- **GD Book Explorer** (per rep): assigned Group-Dealership / Single units → rooftops engaged
+  within each GD → who was engaged (top contacts) → activity depth + last touch. Cumulative and
+  reconciled with book coverage by construction.
+- **Call quality** (read-only from the call-scoring pipeline's Supabase): per-connected-call
+  BANTIC scores + drill-down, weekly coaching snapshots, Call Q column in the rep table.
+
+Built to answer: **are all accounts being tapped — and how well are we working them?**
 
 ## Architecture
 
@@ -13,15 +19,19 @@ Built to answer one question for sales leadership: **are all accounts being tapp
 scripts/sync.ts ──▶ HubSpot (calls + emails search, v4 batch associations)
        │            weekly-sliced pull (beats the 10k Search ceiling)
        ▼
-  data/snapshot.json  (compact per-rep × per-period aggregates + cumulative book coverage)
+  data/snapshot.json  (per-rep × per-period aggregates + cumulative book coverage + GD units)
        │            (also uploaded to Vercel Blob if BLOB_READ_WRITE_TOKEN is set)
        ▼
-  Next.js app (app/page.tsx → components/Dashboard.tsx)
-       reads the snapshot, filters/sorts client-side. No HubSpot calls at request time.
+  Next.js app ── middleware auth gate (Supabase Google SSO, @spyne.ai) ── /login
+       │  page load: snapshot (book units stripped) + weekly coaching        ▲
+       │  drawer:    /api/rep/[id]/book + /api/rep/[id]/calls (lazy, gated)  │
+       ▼                                                                     │
+  call-scoring Supabase (read-only, service-role key server-side) ──────────┘
 ```
 
 The heavy pull runs **outside** Vercel (locally or via the GitHub Action) because a full
-sync can exceed serverless time limits.
+sync can exceed serverless time limits. The web app never calls HubSpot at request time;
+call-quality data is read live from Supabase per request.
 
 ## Key definitions
 

@@ -24,33 +24,44 @@ non-obvious conventions that span multiple files.
 
 Run a **single test**: `npx vitest run tests/buckets.test.ts` (or add `-t "name"` to filter by
 test name; drop `run` for watch mode). Tests live in `tests/` and cover only the pure logic —
-US/Eastern bucketing (`buckets.test.ts`, incl. DST-transition cases) and aggregation (`aggregate.test.ts`).
+US/Eastern bucketing (`buckets.test.ts`, incl. DST-transition cases), aggregation incl. GD book
+units (`aggregate.test.ts`), call-quality mappers (`callquality.test.ts`), and the auth domain
+rule (`auth-domain.test.ts`). Never import `lib/callquality/fetch.ts` or `lib/supabase/admin.ts`
+from a test — the `server-only` guard throws under vitest.
 
 Node 20 (pinned in the GitHub Action; there's no `.nvmrc` or `engines` field). Import alias
 `@/*` maps to the repo root (`tsconfig.json`).
 
-## Architecture: a pre-computed snapshot pipeline
+## Architecture: snapshot pipeline + live call-quality reads, behind an auth gate
 
-The single most important thing to understand: **the app never calls HubSpot at request time.**
-An offline sync produces one JSON snapshot; the web app only reads and filters it.
+Two data sources, one gate. **The app never calls HubSpot at request time**; outreach data comes
+from an offline-synced JSON snapshot. Call-quality data is read **live** from the call-scoring
+project's Supabase at request time. Every route sits behind Supabase Google SSO (spyne.ai only).
 
 ```
 scripts/sync.ts  (run locally or via GitHub Action — NOT on Vercel)
   ├─ lib/sync/pull.ts        pull outbound calls + emails, + each rep's owned-company book
   ├─ lib/sync/associate.ts   resolve activity → contact → company (v4 batch reads)
   ├─ lib/sync/buckets.ts     assign each activity to US/Eastern periods (DST-aware)
-  └─ lib/sync/aggregate.ts   per-rep × per-period metrics + cumulative book coverage
+  └─ lib/sync/aggregate.ts   per-rep × per-period metrics + book coverage + GD units
         ↓
   data/snapshot.json         (committed to git; optionally also uploaded to Vercel Blob)
         ↓
-  lib/snapshot.ts            server-side loader (Blob if configured, else the committed file)
+  lib/snapshot.ts            loader (Blob else committed file) + stripBookUnits()
         ↓
-  app/page.tsx → components/Dashboard.tsx   read once, filter/sort client-side
+  middleware.ts  ── auth gate (session + @spyne.ai domain) ── app/login, app/auth/callback
+        ↓
+  app/page.tsx    snapshot (units stripped) + getCoachingByRep()  → components/Dashboard.tsx
+  app/api/rep/[ownerId]/book    lazy: one rep's GD units (from snapshot, server-side)
+  app/api/rep/[ownerId]/calls   lazy: BANTIC dims + recent analyzed calls (from Supabase)
+        ↑
+  lib/callquality/fetch.ts ── lib/supabase/admin.ts (service-role, server-only, read-only)
 ```
 
 The heavy pull runs **outside Vercel** because a full sync exceeds serverless time limits.
 `lib/sync/types.ts` is the shared contract between the sync pipeline and the UI — change a
-metric's shape there and both sides must agree.
+metric's shape there and both sides must agree. `lib/callquality/types.ts` is the equivalent
+contract for the call-scoring tables (owned by call-scoring-agent; read-only here).
 
 ### Data model
 `Snapshot` → `reps[ownerId]` → `{ periods[periodKey]: PeriodMetrics, daily[], book }`. Six US/Eastern
@@ -59,7 +70,9 @@ periods: `today`, `yesterday`, `last_3_days`, `this_week`, `last_week`, `this_mo
 account temperature, and a quality score. The three **narrow periods** (`today`, `yesterday`,
 `this_week`) additionally carry a per-company drill-down (`company_breakdown`) with contact lists —
 the others omit it to keep the snapshot small. Owned-book **coverage is NOT per-period** — it lives
-once per rep on `RepData.book` (see below), because it is cumulative.
+once per rep on `RepData.book` (see below), because it is cumulative. `book.units` carries the full
+GD → rooftop → top-5-contacts drill-down (the Book Explorer's data); it is heavy, so it never
+reaches the client with the page — see the `stripBookUnits` rule under Conventions.
 
 ## Conventions & gotchas (the load-bearing rules)
 
@@ -86,7 +99,7 @@ once per rep on `RepData.book` (see below), because it is cumulative.
   aborting. Emails need the `connected-email-data-access` scope specifically.
 - **Refresh commits must NOT include `[skip ci]`** — Vercel auto-deploys on push, and the whole
   point of the refresh commit is to trigger a redeploy with the new snapshot. `data/snapshot.json`
-  is committed (a few MB) and is the fallback data source when Blob isn't configured.
+  is committed (~8 MB) and is the fallback data source when Blob isn't configured.
 - **Company attribution order** (`lib/sync/associate.ts`): primary company of each associated
   contact; if an activity has no contact, a direct engagement→company association; else counted as
   unattributed.
@@ -140,8 +153,9 @@ trend are all pure HTML/CSS (Tailwind + conic-gradient / flex widths). State is 
   (`market_segment`), and GD-vs-single. A group unit requires BOTH
   `is_this_is_a_part_of_group_dealership_` AND a `gd_id`; otherwise the rooftop is counted as a
   single (never dropped).
-- **Insights** (`buildInsights`): rule-based good/warn callouts (low coverage, single-channel,
-  shallow depth, low connect rate, high bounce, DM reach, etc.).
+- **Insights** — two sources: `buildInsights` (per-period activity callouts: single-channel,
+  shallow depth, low connect rate, high bounce, DM reach, etc.) and `bookInsights` (coverage
+  callouts on `BookCoverage.insights`: low coverage, untapped in-pipeline accounts).
 
 ## Refresh workflow
 
