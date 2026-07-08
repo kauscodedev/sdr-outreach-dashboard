@@ -2,19 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Design tokens (Phase-1). One source of truth for color; consumed via tailwind.config.ts
+ * (bg-surface, text-ink-muted, border-line, text-primary, …). Light-only for now, but every
+ * value is a variable so a dark theme is later a matter of overriding :root under a selector.
+ *
+ * Palette intent: a cool, quiet neutral canvas + a single indigo primary used sparingly.
+ * Warm hues (rose/amber) are RESERVED for account temperature so they always mean "heat",
+ * never decoration.
+ */
 :root {
   color-scheme: light;
+
+  /* Surfaces & lines */
+  --canvas: #f5f6f8;
+  --surface: #ffffff;
+  --surface-muted: #f3f5f8;
+  --line: #e7e9ee;
+  --line-strong: #d3d7df;
+
+  /* Ink (text) ramp */
+  --ink: #14161c;
+  --ink-muted: #545b68;
+  --ink-subtle: #8a909d;
+
+  /* Primary */
+  --primary: #4f46e5; /* indigo-600 */
+  --primary-strong: #4338ca;
+  --primary-weak: #eef0fe;
+  --primary-fg: #ffffff;
+
+  /* Semantic accents */
+  --good: #0f9d63;
+  --good-weak: #e6f6ee;
+  --warn: #c2740a;
+  --warn-weak: #fdf1df;
+  --danger: #dc2626;
+  --danger-weak: #fdeaea;
+
+  /* Temperature ramp (hot → cold) */
+  --hot: #ef4444;
+  --hot-weak: #fdecec;
+  --warm: #f59e0b;
+  --warm-weak: #fdf3e0;
+  --cold: #3b82f6;
+  --cold-weak: #eaf1fe;
+
+  --ring: rgba(79, 70, 229, 0.35);
+  --shadow-card: 0 1px 2px rgba(16, 18, 24, 0.04), 0 1px 3px rgba(16, 18, 24, 0.06);
+  --shadow-pop: 0 8px 30px rgba(16, 18, 24, 0.12);
 }
 
 html,
 body {
-  background: #f1f5f9; /* slate-100 */
-  color: #0f172a; /* slate-900 */
+  background: var(--canvas);
+  color: var(--ink);
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numbers should always align and read as data. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 .scroll-x {
@@ -24,6 +77,15 @@ body {
   height: 8px;
 }
 .scroll-x::-webkit-scrollbar-thumb {
-  background: #cbd5e1; /* slate-300 */
+  background: var(--line-strong);
+  border-radius: 9999px;
+}
+
+/* Thin vertical scrollbar for drawer / scroll regions. */
+.scroll-y::-webkit-scrollbar {
+  width: 8px;
+}
+.scroll-y::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
   border-radius: 9999px;
 }
