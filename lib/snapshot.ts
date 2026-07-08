@@ -76,6 +76,16 @@ export function emptySnapshot(): Snapshot {
   };
 }
 
+async function loadFromSpine(): Promise<Snapshot | null> {
+  try {
+    const { loadSnapshotRow } = await import("./spine/store");
+    return await loadSnapshotRow();
+  } catch (err) {
+    console.error("[snapshot] spine load failed, falling back:", err);
+    return null;
+  }
+}
+
 async function loadFromBlob(): Promise<Snapshot | null> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) return null;
   try {
@@ -106,7 +116,7 @@ async function loadFromFile(): Promise<Snapshot | null> {
 }
 
 export async function getSnapshot(): Promise<Snapshot> {
-  return (await loadFromBlob()) ?? (await loadFromFile()) ?? emptySnapshot();
+  return (await loadFromSpine()) ?? (await loadFromBlob()) ?? (await loadFromFile()) ?? emptySnapshot();
 }
 
 /**
