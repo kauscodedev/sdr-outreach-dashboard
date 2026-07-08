@@ -36,8 +36,10 @@ units (`aggregate.test.ts`), call-quality mappers (`callquality.test.ts`), and t
 rule (`auth-domain.test.ts`). Never import `lib/callquality/fetch.ts` or `lib/supabase/admin.ts`
 from a test — the `server-only` guard throws under vitest.
 
-Node 20 (pinned in the GitHub Action; there's no `.nvmrc` or `engines` field). Import alias
-`@/*` maps to the repo root (`tsconfig.json`).
+Node 22+ required (`engines.node` in `package.json`; the sync workflows pin `node-version: 22`).
+This is a hard floor, not a preference: `@supabase/supabase-js` constructs a Realtime client that
+needs a global `WebSocket`, which only exists on Node 21+ — on Node 20 every `supabaseAdmin()` call
+throws "native WebSocket not found". Import alias `@/*` maps to the repo root (`tsconfig.json`).
 
 ## Architecture: change-feed spine → Postgres → snapshot row, behind an auth gate
 

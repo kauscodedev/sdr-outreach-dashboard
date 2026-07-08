@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "SDR outbound outreach coverage dashboard sourced from HubSpot (unique contacts/companies tapped per rep per IST period).",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
