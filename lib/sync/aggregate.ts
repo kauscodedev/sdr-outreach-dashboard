@@ -141,7 +141,7 @@ const highIntentCount = (s: SigAcc) => s.meetingScheduled + s.meetingRescheduled
 type ContactAcc = SigAcc;
 
 interface CompanyStat extends SigAcc {
-  contacts: Set<string>;
+  contacts: Map<string, ContactAcc>; // per-contact signals (drives the L3 contacts table)
 }
 
 interface Acc {
@@ -206,9 +206,13 @@ function applyActivity(acc: Acc, a: Activity): void {
   }
 
   for (const co of a.companyIds) {
-    const s = acc.companyStat.get(co) ?? { ...newSig(), contacts: new Set<string>() };
-    a.contactIds.forEach((c) => s.contacts.add(c));
+    const s = acc.companyStat.get(co) ?? { ...newSig(), contacts: new Map<string, ContactAcc>() };
     recordSig(s, a);
+    for (const cid of a.contactIds) {
+      const cs = s.contacts.get(cid) ?? newSig();
+      recordSig(cs, a);
+      s.contacts.set(cid, cs);
+    }
     acc.companyStat.set(co, s);
   }
 
@@ -270,7 +274,6 @@ function buildInsights(m: {
   if (m.emails === 0 && m.calls > 0) out.push({ level: "warn", text: "📞 Call-only — 0 emails (single-channel)" });
   if (m.calls === 0 && m.emails > 0) out.push({ level: "warn", text: "✉ Email-only — 0 calls (single-channel)" });
   if (m.connectDenom >= 20 && m.connectRate < 0.08) out.push({ level: "warn", text: `📉 Low connect rate ${pct(m.connectRate)}` });
-  if (m.companiesTapped >= 10 && m.depth < 1.3) out.push({ level: "warn", text: `🪨 Shallow — ${m.depth.toFixed(1)} contacts/account` });
   if (m.companiesTapped >= 10 && m.persistenceShare < 0.2) out.push({ level: "warn", text: `🔁 Only ${pct(m.persistenceShare)} of accounts re-touched` });
   if (m.emailsSent >= 10 && m.bounceRate > 0.1) out.push({ level: "warn", text: `⚠ High email bounce ${pct(m.bounceRate)}` });
   return out;
@@ -368,10 +371,7 @@ function finalize(
           replied: s.replied,
           last_ms: s.lastMs || null,
           owned: ownedSet.has(id),
-          contacts_list: [...s.contacts].map((cid) => {
-            const meta = contactMeta[cid];
-            return { id: cid, name: meta?.name ?? `Contact ${cid}`, title: meta?.title ?? undefined, dm: meta?.dm };
-          }),
+          contacts_list: contactsFrom(s.contacts, contactMeta),
         };
       })
       .sort((a, b) => b.calls + b.emails - (a.calls + a.emails));
@@ -426,18 +426,21 @@ function bookInsights(b: BookCoverage): Insight[] {
   return out;
 }
 
-/** Build the engaged-contact list for one rooftop — each contact carries its own temperature. */
-function rooftopContacts(stat: RoofAcc, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
-  return [...stat.contacts.entries()]
-    .map(([id, c]) => {
-      const meta = contactMeta[id];
-      return {
-        id, name: meta?.name ?? `Contact ${id}`, title: meta?.title ?? undefined, dm: meta?.dm,
-        calls: c.calls, emails: c.emails,
-        last_ms: c.lastMs, last_type: c.lastType ?? "call",
-        temp: classify(c).temp,
-      };
-    })
+/** One engaged contact with its own recency + temperature (shared by book + period views). */
+function toContact(id: string, c: SigAcc, contactMeta: Record<string, ContactMeta>): RooftopContact {
+  const meta = contactMeta[id];
+  return {
+    id, name: meta?.name ?? `Contact ${id}`, title: meta?.title ?? undefined, dm: meta?.dm,
+    calls: c.calls, emails: c.emails,
+    last_ms: c.lastMs, last_type: c.lastType ?? "call",
+    temp: classify(c).temp,
+  };
+}
+
+/** Engaged-contact list from a per-contact signal map, most-engaged first (capped). */
+function contactsFrom(contacts: Map<string, SigAcc>, contactMeta: Record<string, ContactMeta>): RooftopContact[] {
+  return [...contacts.entries()]
+    .map(([id, c]) => toContact(id, c, contactMeta))
     .sort((a, b) => (b.calls + b.emails) - (a.calls + a.emails))
     .slice(0, ROOFTOP_CONTACT_CAP);
 }
@@ -506,7 +509,7 @@ function computeBookCoverage(
         negative: stat.negative, disqualified: t.disqualified,
         last_ms: stat.lastMs || null,
         temp: t.temp, temp_reason: t.reason,
-        contacts: rooftopContacts(stat, contactMeta),
+        contacts: contactsFrom(stat.contacts, contactMeta),
       };
     });
 
