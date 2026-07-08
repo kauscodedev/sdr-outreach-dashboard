@@ -6,6 +6,7 @@ import { hotAccountsFromSnapshot, getWatches, upsertWatch, markStatus, addNote, 
 import { detectWatchWork } from "./detect";
 import { reason, AGENT_MODEL, isConfigured } from "./openai";
 import { buildContext } from "./context";
+import { loadTimelineForAccount } from "./timeline";
 
 const DAY = 86_400_000;
 
@@ -48,8 +49,8 @@ export async function runAgent(opts: { limit?: number; nowMs?: number } = {}): P
   for (const account of toReview.slice(0, limit)) {
     try {
       if (!repCallsCache.has(account.repId)) repCallsCache.set(account.repId, await getRepCalls(account.repId));
-      const content = await loadContentForAccount(account.accountId);
-      const ctx = buildContext(account, coaching[account.repId], repCallsCache.get(account.repId) ?? null, content);
+      const timeline = await loadTimelineForAccount(account.accountId);
+      const ctx = buildContext(account, coaching[account.repId], repCallsCache.get(account.repId) ?? null, timeline);
       const verdict = await reason(ctx);
       if (!verdict) { errors++; continue; }
       await upsertWatch(account, verdict, AGENT_MODEL, watches.has(account.accountId));

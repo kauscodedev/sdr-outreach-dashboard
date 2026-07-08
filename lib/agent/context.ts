@@ -5,14 +5,14 @@
  *    recommended next actions) filtered to this account
  *  - raw call/email content (once the content-backfill has populated sdr_activity_content)
  */
-import { AccountContext, HotAccount } from "./types";
+import { AccountContext, HotAccount, TimelineEvent } from "./types";
 import { CoachingSnapshot, RepCallsPayload } from "../callquality/types";
 
 export function buildContext(
   account: HotAccount,
   coaching: CoachingSnapshot | undefined,
   repCalls: RepCallsPayload | null,
-  content: string[],
+  timeline: TimelineEvent[],
 ): AccountContext {
   const snippets: string[] = [];
   const calls = (repCalls?.calls ?? []).filter((c) => c.companyId === account.accountId);
@@ -25,6 +25,6 @@ export function buildContext(
     account,
     coachingSummary: coaching?.managerSummary ?? null,
     callSnippets: snippets,
-    content,
+    timeline,
   };
 }

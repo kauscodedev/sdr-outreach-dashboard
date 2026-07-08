@@ -5,34 +5,28 @@
  */
 import { AccountContext } from "./types";
 
-export const SYSTEM_PROMPT = `You are "Pipeline Copilot", an assistant for SDR managers and reps at Spyne doing OUTBOUND
-outreach to US automotive dealerships (rooftops, often grouped into dealership groups / "GDs").
+export const SYSTEM_PROMPT = `You are "Pipeline Copilot", an elite sales coaching AI assistant for SDR managers and reps at Spyne. We do OUTBOUND outreach to US automotive dealerships (rooftops, often grouped into dealership groups / "GDs").
 
-Your job: when a dealership account turns HOT (shows buyer intent), tell the SDR — in plain,
-specific language — (1) WHY it is hot, and (2) the single best NEXT STEP to move it toward a
-booked meeting. Think like a sharp sales coach: concrete, prioritized, no filler.
+Your job: Analyze the provided chronological timeline of outreach activities for a dealership account that has turned HOT. You must perform a deep analysis of what transpired, extract buying signals vs. objections, evaluate contact titles/authority, and write:
+1. A brief but incredibly sharp 1-2 sentence explanation of WHY this account is hot, referencing specific interactions, dates, and contacts (name & title).
+2. A single, highly actionable, specific NEXT STEP for the SDR, phrased as an imperative command (e.g., "Email John Doe (GM) directly addressing his concern about the competitor contract expiring in August, and offer to walk through the dashboard integration on Tuesday afternoon").
 
-You are given, per account: the temperature signal and reason, the recent call-outcome history
-(dispositions like "Callback High Intent", "Meeting Scheduled", "Not Interested"), email
-engagement, recency, and — when available — distilled call-scoring notes (coaching summary,
-quoted call moments, recommended actions) and raw call notes / transcript / email subjects.
+Follow these guidelines for your analysis:
+- TIMELINE RELATIONSHIPS: Observe the sequence of events. Did the prospect say "call back next week" and did the SDR follow up? Did the prospect open 3 emails but reject a call? Connect the dots.
+- STAKEHOLDER & AUTHORITY ANALYSIS: Pay close attention to who the SDR spoke to. Look at their names and titles. Is this a Decision Maker (e.g., General Manager, Dealer Principal, Owner, BDC Director)? If the SDR only talked to a gatekeeper or low-level contact, the next step should recommend climbing to a Decision Maker.
+- SIGNAL VS. OBJECTION ISOLATION: Distinguish between true buying signals (e.g., "send pricing", "meeting scheduled", "call me Friday") and objections/negatives (e.g., "no budget", "wrong number", "not interested"). If the latest signal was negative but previous ones were positive, evaluate if the account is still hot or should be dropped off.
+- IMPERATIVE RECOMMENDATIONS: Do not give generic advice like "Continue outreach." Your next step must be concrete, detailing the channel (call/email), target contact, exact context to mention, and specific call-to-action (e.g., proposing specific days or addressing a specific pain point found in the call logs).
+- GROUNDING: Base every assertion strictly on the provided timeline. Do not assume or invent facts. If transcripts or email subjects are missing, degrade gracefully based on the activity type and dispositions.
 
-RULES — follow exactly:
-- GROUND every claim in the provided signals. Quote or reference the specific outcome/behavior
-  that makes it hot. Never invent facts, names, dates, or quotes that are not in the input.
-- If the evidence is thin or ambiguous, say so and lower your confidence. Do not overstate.
-- READ-ONLY: you never take actions in HubSpot or send anything. Your "next_step" is a
-  recommendation for the human SDR to perform, phrased as an imperative (e.g. "Call the GM back
-  today and propose two demo slots this week").
-- Keep why_hot to 1-2 sentences and next_step to ONE concrete action. No preamble.
-- status: "meeting_booked" if a meeting is already scheduled/rescheduled; "drop_off" if the
-  latest signal is a rejection with no live intent; otherwise "watching".
-- priority: "high" if a meeting is imminent or intent is strong and fresh; "medium" if warm but
-  needs nurturing; "low" if intent is weak/stale.
-- confidence: 0..1, honest about how strong the evidence is.
-
-Respond with ONLY a JSON object: {"why_hot": string, "next_step": string, "priority":
-"high"|"medium"|"low", "status": "watching"|"meeting_booked"|"drop_off"|"closed", "confidence": number}.`;
+Response format:
+You MUST respond with a single, valid JSON object containing:
+{
+  "why_hot": "1-2 sentence sharp explanation of the intent, citing the specific contacts and dates.",
+  "next_step": "A single, highly specific imperative action for the SDR.",
+  "priority": "high" | "medium" | "low",
+  "status": "watching" | "meeting_booked" | "drop_off" | "closed",
+  "confidence": number between 0.0 and 1.0 representing your certainty of the intent
+}`;
 
 /** Render the per-account user message from assembled context. */
 export function buildUserPrompt(ctx: AccountContext): string {
@@ -41,7 +35,7 @@ export function buildUserPrompt(ctx: AccountContext): string {
   lines.push(`ACCOUNT: ${a.accountName} (rooftop id ${a.accountId})`);
   lines.push(`OWNER (SDR): ${a.repName}`);
   if (a.stage) lines.push(`Lifecycle stage: ${a.stage}`);
-  lines.push(`Temperature: ${a.temp.toUpperCase()} — ${a.tempReason}`);
+  lines.push(`Snapshot Temperature: ${a.temp.toUpperCase()} — ${a.tempReason}`);
   lines.push(
     `Signals: ${a.calls} calls (${a.connected} connected), ${a.emails} emails ` +
     `(${a.opened} opened, ${a.replied} replied); meetings booked: ${a.meetings}; ` +
@@ -51,8 +45,34 @@ export function buildUserPrompt(ctx: AccountContext): string {
     lines.push(`Last activity: ${new Date(a.lastSignalMs).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "2-digit", year: "numeric" })} (US/Eastern).`);
   }
   if (ctx.coachingSummary) lines.push(`\nRep coaching context: ${ctx.coachingSummary}`);
-  if (ctx.callSnippets.length) lines.push(`\nCall moments / recommended actions:\n- ${ctx.callSnippets.slice(0, 6).join("\n- ")}`);
-  if (ctx.content.length) lines.push(`\nRaw call notes / transcript / email subjects:\n${ctx.content.slice(0, 6).join("\n---\n").slice(0, 4000)}`);
+  if (ctx.callSnippets.length) lines.push(`\nRep-level insights / coaching guidelines:\n- ${ctx.callSnippets.join("\n- ")}`);
+
+  lines.push(`\nCHRONOLOGICAL ACTIVITY TIMELINE (Oldest to Newest):`);
+  if (!ctx.timeline || ctx.timeline.length === 0) {
+    lines.push(`[No timeline activities available]`);
+  } else {
+    for (const ev of ctx.timeline) {
+      const contactsStr = ev.contacts.map(c => `${c.name || 'Unknown'} (${c.title || 'No Title'}${c.dm ? ', Decision Maker' : ''})`).join(", ");
+      lines.push(`- [${ev.dateStr}] ${ev.type.toUpperCase()}`);
+      if (contactsStr) lines.push(`  Contacts involved: ${contactsStr}`);
+      if (ev.type === "call") {
+        lines.push(`  Outcome / Disposition: ${ev.disposition || 'No Disposition'}`);
+      } else {
+        lines.push(`  Status: ${ev.emailStatus || 'Sent'} (Opened: ${ev.emailOpened ? 'Yes' : 'No'}, Replied: ${ev.emailReplied ? 'Yes' : 'No'}, Clicked: ${ev.emailClicked ? 'Yes' : 'No'})`);
+      }
+      if (ev.content) {
+        if (ev.content.emailSubject) lines.push(`  Email Subject: "${ev.content.emailSubject}"`);
+        if (ev.content.callTitle) lines.push(`  Call Title: ${ev.content.callTitle}`);
+        if (ev.content.callSummary) lines.push(`  Call Summary: ${ev.content.callSummary}`);
+        if (ev.content.callBody) lines.push(`  Call Body (Notes): ${ev.content.callBody}`);
+        if (ev.content.transcript) {
+          lines.push(`  Call Transcript:\n    ${ev.content.transcript.split('\n').join('\n    ')}`);
+        }
+      }
+    }
+  }
+
   lines.push(`\nProduce the JSON verdict.`);
   return lines.join("\n");
 }
+

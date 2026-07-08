@@ -49,10 +49,36 @@ export interface AgentVerdict {
   confidence: number; // 0..1
 }
 
+export interface TimelineEvent {
+  hsId: string;
+  type: "call" | "email";
+  tsMs: number;
+  dateStr: string;
+  disposition: string | null;
+  emailStatus: string | null;
+  emailOpened: boolean;
+  emailReplied: boolean;
+  emailClicked: boolean;
+  contacts: {
+    hsId: string;
+    name: string | null;
+    title: string | null;
+    dm: boolean;
+  }[];
+  content: {
+    callTitle: string | null;
+    callBody: string | null;
+    callSummary: string | null;
+    transcript: string | null;
+    emailSubject: string | null;
+  } | null;
+}
+
 /** Assembled reasoning context for one account (fed to the model). */
 export interface AccountContext {
   account: HotAccount;
   coachingSummary: string | null; // distilled rep-level coaching (call-scoring project)
   callSnippets: string[]; // quoted call moments / recommended actions
-  content: string[]; // raw call notes / transcript / email subjects (when ingested)
+  timeline: TimelineEvent[]; // chronological activity timeline
 }
+
