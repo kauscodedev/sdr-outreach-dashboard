@@ -15,6 +15,7 @@
     "sync:backfill": "tsx --conditions=react-server scripts/spine-backfill.ts",
     "sync:delta": "tsx --conditions=react-server scripts/spine-delta.ts",
     "sync:reconcile": "tsx --conditions=react-server scripts/spine-reconcile.ts",
+    "sync:reaggregate": "tsx --conditions=react-server scripts/reaggregate.ts",
     "verify:schema": "tsx --conditions=react-server scripts/verify-sdr-schema.ts",
     "agent:run": "tsx --conditions=react-server scripts/agent-run.ts",
     "content:backfill": "tsx --conditions=react-server scripts/content-backfill.ts",

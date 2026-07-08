@@ -48,7 +48,7 @@ import {
 
 const DAY_MS = 86_400_000;
 const UNTAPPED_SAMPLE_CAP = 200;
-const ROOFTOP_CONTACT_CAP = 50; // engaged contacts kept per rooftop for the L3 contacts table
+const ROOFTOP_CONTACT_CAP = 12; // engaged contacts per rooftop for the L3 table (avg ~1.3; caps snapshot size)
 
 /**
  * Map a raw `lifecycle_stage_gd_level` value to a StageGroup bucket (case-insensitive).

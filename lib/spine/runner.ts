@@ -87,7 +87,7 @@ async function persistResolved(raw: RawActivity[]) {
  *  means a regression (bad anchor, fetchAll fault) — throw rather than silently
  *  overwrite the good snapshot row (which outranks the file fallback) with nothing.
  *  Backfill passes false: it is the run that legitimately populates an empty spine. */
-async function reaggregate(caps: PullCaps, expectData: boolean) {
+export async function reaggregate(caps: PullCaps, expectData: boolean) {
   const store = await loadStoreForAggregate(anchorMs());
   if (expectData && store.activities.length === 0) {
     throw new Error("[spine] aggregate guard: spine returned 0 activities when data was expected — " +
@@ -96,6 +96,8 @@ async function reaggregate(caps: PullCaps, expectData: boolean) {
   const ctx = makeEtContext(Date.now());
   const snap = aggregate(store.activities, store.companyNames, store.companyGdStage,
     store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps);
+  const sizeMb = Buffer.byteLength(JSON.stringify(snap)) / 1_048_576;
+  console.log(`[spine] snapshot ${sizeMb.toFixed(2)} MB (${store.activities.length} activities)`);
   await saveSnapshot(snap);
   return snap.totals;
 }
