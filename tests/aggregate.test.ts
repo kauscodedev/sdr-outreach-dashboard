@@ -122,6 +122,18 @@ describe("aggregate", () => {
     expect(book.by_group_kind.single).toEqual({ total: 2, tapped: 1 }); // X tapped, Z not
   });
 
+  it("marks a GD tapped when activity is present on any company-level rooftop", () => {
+    const gdOnly = aggregate(
+      [act({ type: "email", companyIds: ["G2"], timestampMs: NOW - 10 * DAY_MS })],
+      { G2: "Group B" }, {}, contactMeta, owned, ctx, NOW, { calls: true, emails: true },
+    ).reps[REP].book;
+
+    const gd = gdOnly.units.find((u) => u.key === "gd:900")!;
+    expect(gd).toMatchObject({ tapped: true, temp: "cold" });
+    expect(gdOnly.units_tapped).toBe(1);
+    expect(gd.rooftops.find((r) => r.id === "G2")).toMatchObject({ tapped: true, emails: 1 });
+  });
+
   it("segments coverage by GD-level lifecycle stage (lifecycle_stage_gd_level)", () => {
     expect(book.by_stage["In Pipeline"]).toEqual({ total: 2, tapped: 2 }); // X + GD900
     expect(book.by_stage["Prospect"]).toEqual({ total: 1, tapped: 0 }); // Z only
@@ -147,6 +159,7 @@ describe("aggregate", () => {
     expect(gd.key).toBe("gd:900");
     expect(gd.isGroup).toBe(true);
     expect(gd.tapped).toBe(true);
+    expect(gd).toMatchObject({ temp: "warm", temp_reason: expect.stringMatching(/connected/i) });
     expect(gd.rooftops.map((r) => r.id)).toEqual(["G1", "G2"]); // tapped first
     const g1 = gd.rooftops[0];
     expect(g1).toMatchObject({ tapped: true, calls: 1, connected: 1, emails: 0, last_ms: NOW - 60 * DAY_MS });
@@ -154,6 +167,8 @@ describe("aggregate", () => {
     expect(g1.contacts).toEqual([]); // that call carried no contacts
     const g2 = gd.rooftops[1];
     expect(g2).toMatchObject({ tapped: false, temp: "cold", temp_reason: "Untouched", last_ms: null });
+    const zeta = book.units.find((u) => u.key === "single:Z")!;
+    expect(zeta).toMatchObject({ tapped: false, temp: "cold", temp_reason: "Untouched" });
   });
 
   it("ranks engaged contacts per rooftop (top-5 by touches, meta attached)", () => {

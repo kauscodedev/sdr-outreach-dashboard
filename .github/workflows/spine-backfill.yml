@@ -1,0 +1,20 @@
+name: Spine full backfill
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: spine-sync
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }  # 22+: supabase-js needs a global WebSocket (absent on Node 20)
+      - run: npm ci
+      - run: npm run sync:backfill
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

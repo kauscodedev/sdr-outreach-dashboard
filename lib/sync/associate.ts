@@ -4,8 +4,10 @@
  * activity this is ~tens of requests rather than tens of thousands.
  *
  * Company attribution per activity:
- *   primary company of each associated contact; if an activity has no contact,
- *   fall back to a direct engagement->company association; else "unattributed".
+ *   union direct engagement->company associations with the primary company of
+ *   each associated contact. Direct associations matter for GD coverage: a
+ *   contact's primary company can differ from the specific rooftop where the
+ *   call/email was logged.
  */
 
 import { hubspotPost, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
@@ -137,6 +139,20 @@ function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
   return (primary ?? targets[0]).toId; // deterministic first-company fallback
 }
 
+export function companyIdsForActivity(
+  contactIds: string[],
+  contactCompany: Map<string, string>,
+  directCompanyIds: string[] | undefined,
+): string[] {
+  const out = new Set<string>();
+  for (const c of contactIds) {
+    const co = contactCompany.get(c);
+    if (co) out.add(co);
+  }
+  for (const co of directCompanyIds ?? []) out.add(co);
+  return [...out];
+}
+
 export interface ResolveResult {
   activities: Activity[];
   companyNames: Record<string, string>;
@@ -174,14 +190,14 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
     if (co) contactCompany.set(contactId, co);
   }
 
-  // Fallback: activities with NO contact may still carry a direct company.
-  const noContactCalls = callIds.filter((id) => !(activityContacts.get(id)?.length));
-  const noContactEmails = emailIds.filter((id) => !(activityContacts.get(id)?.length));
+  // Direct company associations are not just a fallback. In HubSpot, a logged
+  // engagement can point at a specific rooftop even when the associated contact's
+  // primary company points somewhere else in the dealer group.
   console.log(
-    `Direct-company fallback for ${noContactCalls.length} calls + ${noContactEmails.length} emails with no contact…`,
+    `Resolving direct company associations for ${callIds.length} calls + ${emailIds.length} emails…`,
   );
-  const callCompanies = await batchReadAssociations("calls", "companies", noContactCalls);
-  const emailCompanies = await batchReadAssociations("emails", "companies", noContactEmails);
+  const callCompanies = await batchReadAssociations("calls", "companies", callIds);
+  const emailCompanies = await batchReadAssociations("emails", "companies", emailIds);
   const directCompany = new Map<string, string[]>();
   for (const [id, targets] of [...callCompanies, ...emailCompanies]) {
     directCompany.set(id, targets.map((t) => t.toId));
@@ -191,17 +207,7 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
   const usedCompanyIds = new Set<string>();
   const activities: Activity[] = raw.map((a) => {
     const contactIds = activityContacts.get(a.id) ?? [];
-    let companyIds: string[];
-    if (contactIds.length) {
-      const set = new Set<string>();
-      for (const c of contactIds) {
-        const co = contactCompany.get(c);
-        if (co) set.add(co);
-      }
-      companyIds = [...set];
-    } else {
-      companyIds = directCompany.get(a.id) ?? [];
-    }
+    const companyIds = companyIdsForActivity(contactIds, contactCompany, directCompany.get(a.id));
     companyIds.forEach((c) => usedCompanyIds.add(c));
     return {
       id: a.id,

@@ -99,6 +99,28 @@ function newSig(): SigAcc {
 
 const laterMs = (cur: number | null, ts: number): number => (cur == null ? ts : Math.max(cur, ts));
 
+function mergeSig(into: SigAcc, from: SigAcc): void {
+  into.calls += from.calls;
+  into.emails += from.emails;
+  into.connected += from.connected;
+  into.opened += from.opened;
+  into.replied += from.replied;
+  into.meetingScheduled += from.meetingScheduled;
+  into.meetingRescheduled += from.meetingRescheduled;
+  into.callbackHigh += from.callbackHigh;
+  into.callbackLow += from.callbackLow;
+  into.gaveReferral += from.gaveReferral;
+  into.negative += from.negative;
+  if (from.lastMs >= into.lastMs) into.lastType = from.lastType;
+  into.lastMs = Math.max(into.lastMs, from.lastMs);
+  if (from.lastPositiveMs != null) into.lastPositiveMs = laterMs(into.lastPositiveMs, from.lastPositiveMs);
+  if (from.lastNegativeMs != null) {
+    const newestNegative = into.lastNegativeMs == null || from.lastNegativeMs >= into.lastNegativeMs;
+    into.lastNegativeMs = laterMs(into.lastNegativeMs, from.lastNegativeMs);
+    if (newestNegative) into.negativeLabel = from.negativeLabel;
+  }
+}
+
 /** Fold one activity into a signal accumulator — the ONE place outcome business-rules live. */
 function recordSig(s: SigAcc, a: Activity): void {
   if (a.timestampMs >= s.lastMs) s.lastType = a.type;
@@ -523,9 +545,11 @@ function computeBookCoverage(
       untapped_sample.push({ id: u.rooftops[0].id, name: u.name, stage });
     }
 
+    const unitStat = newRoofAcc();
     const rooftops: RooftopDetail[] = u.rooftops.map((r) => {
       const rTapped = everTapped.has(r.id);
       const stat = roofStats.get(r.id) ?? newRoofAcc();
+      mergeSig(unitStat, stat);
       const t = classify(stat, rTapped); // handles the untapped case → cold / "Untouched"
 
       return {
@@ -546,7 +570,12 @@ function computeBookCoverage(
       return a.name.localeCompare(b.name);
     });
 
-    unitDetails.push({ key, name: u.name, isGroup: u.isGroup, stage, dealership, segment, tapped, rooftops });
+    const unitTemp = classify(unitStat, tapped);
+    unitDetails.push({
+      key, name: u.name, isGroup: u.isGroup, stage, dealership, segment, tapped,
+      temp: unitTemp.temp, temp_reason: unitTemp.reason,
+      rooftops,
+    });
   }
 
   unitDetails.sort((a, b) => {
