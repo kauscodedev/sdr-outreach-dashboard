@@ -4,7 +4,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
-  BookCoverage, CoverageDim, CompanyBreakdownRow,
+  BookCoverage, CoverageDim, CompanyBreakdownRow, MonthMetrics,
 } from "../lib/sync/types";
 import {
   Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download, ShieldCheck,
@@ -117,6 +117,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
         <div className="flex flex-col items-end gap-1.5 text-right text-xs text-ink-muted">
           <div className="flex items-center gap-2">
             <Chip tone="primary" className="uppercase tracking-wide"><ShieldCheck className="h-3 w-3" />{viewer.role}</Chip>
+            <a href="/attention" className="inline-flex items-center gap-1 font-semibold text-hot hover:underline"><Flame className="h-3 w-3" />Attention</a>
             {viewer.isAdmin && <a href="/admin" className="font-semibold text-primary hover:underline">Admin</a>}
             <LogoutButton />
           </div>
@@ -281,6 +282,7 @@ function Scorecard({ data, m, period, name, ownerId }: { data: RepData; m: Perio
     <div className="space-y-5">
       <InsightChips insights={m.insights} hasBreakdown={hasBreakdown} onMeetings={() => focusAccounts("meetings")} onHot={() => focusAccounts("hot")} />
       <KpiStrip m={m} />
+      <MonthlyCard monthly={data.monthly} />
       <GdExplorer ownerId={ownerId} book={data.book} />
       <div className="grid gap-5 lg:grid-cols-2">
         <CoverageCard book={data.book} />
@@ -345,6 +347,42 @@ function KpiStrip({ m }: { m: PeriodMetrics }) {
         </Surface>
       ))}
     </div>
+  );
+}
+
+function MonthlyCard({ monthly }: { monthly: MonthMetrics[] }) {
+  const [sel, setSel] = useState(0);
+  if (!monthly?.length) return null;
+  const m = monthly[Math.min(sel, monthly.length - 1)];
+  const cells: { l: string; v: string; sub?: string; accent?: boolean }[] = [
+    { l: "Rooftops worked", v: fmt(m.rooftops_engaged), sub: `${fmt(m.rooftops_new)} new`, accent: true },
+    { l: "Contacts engaged", v: fmt(m.contacts_engaged), sub: `${fmt(m.contacts_new)} new`, accent: true },
+    { l: "GD / Single", v: `${fmt(m.gds_engaged)} / ${fmt(m.singles_engaged)}` },
+    { l: "Activity", v: fmt(m.calls + m.emails), sub: `${fmt(m.connected)} conn` },
+  ];
+  return (
+    <Surface className="p-4">
+      <SectionTitle right={
+        <div className="flex gap-1">
+          {monthly.map((mm, i) => (
+            <button key={mm.month} onClick={() => setSel(i)}
+              className={cn("rounded-lg px-2 py-1 text-[11px] font-semibold transition", i === sel ? "bg-primary text-primary-fg" : "bg-surface-muted text-ink-muted hover:text-ink")}>
+              {mm.label}
+            </button>
+          ))}
+        </div>
+      }>New vs existing accounts worked — {m.label}</SectionTitle>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {cells.map((c) => (
+          <div key={c.l} className="rounded-xl border border-line px-3 py-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-subtle">{c.l}</div>
+            <div className="font-mono text-xl font-bold tabular-nums text-ink">{c.v}</div>
+            {c.sub && <div className={cn("text-[11px] font-medium tabular-nums", c.accent ? "text-good" : "text-ink-subtle")}>{c.sub}</div>}
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-ink-subtle">Owned book · US/Eastern month. &ldquo;New&rdquo; = first-ever worked that month (no prior activity). Counts any tracked rep&rsquo;s work on the account.</p>
+    </Surface>
   );
 }
 

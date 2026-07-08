@@ -268,10 +268,30 @@ export interface PeriodMetrics {
   company_breakdown?: CompanyBreakdownRow[]; // narrow periods only
 }
 
+/**
+ * Per-calendar-month engagement over the rep's OWNED book (US/Eastern months). "New" =
+ * first-ever worked that month (the account/contact had no activity before the month started,
+ * over the coverage-anchor history) — the manager view of fresh accounts vs the whole book.
+ */
+export interface MonthMetrics {
+  month: string; // YYYY-MM (US/Eastern)
+  label: string; // e.g. "Jul 2026"
+  rooftops_engaged: number; // owned rooftops with >=1 touch this month (any tracked doer)
+  rooftops_new: number; // of those, first-ever worked this month
+  gds_engaged: number; // distinct owned GD units touched this month
+  singles_engaged: number;
+  contacts_engaged: number; // distinct contacts engaged on owned rooftops this month
+  contacts_new: number; // of those, first-ever engaged this month
+  calls: number;
+  emails: number;
+  connected: number;
+}
+
 export interface RepData {
   periods: Record<PeriodKey, PeriodMetrics>;
   daily: DailyPoint[]; // one point per ET day in the (short) window
   book: BookCoverage; // cumulative owned-book coverage — period-independent
+  monthly: MonthMetrics[]; // last 3 US/Eastern months, newest first
 }
 
 export interface Snapshot {

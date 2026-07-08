@@ -249,3 +249,56 @@ describe("temperature engine v2 (outcome-driven)", () => {
     expect(lost.C2).toMatchObject({ temp: "cold", disqualified: true });
   });
 });
+
+// ── Owner != activity-doer: a teammate's work still taps the OWNER's book ────────────
+describe("owner != activity-doer coverage", () => {
+  const ctx = makeEtContext(NOW);
+  const OWNER = "69016314"; // Rajveer Singh (owns the account)
+  const TEAMMATE = "66975998"; // Sanamdeep — a different tracked rep does the work
+
+  it("counts a teammate's activity on an owned account as tapped in the OWNER's book", () => {
+    const owned = { [OWNER]: [own({ id: "W", name: "Westside Auto", gdStage: "Prospect", segment: "mm_single" })] };
+    const snap = aggregate(
+      [act({ ownerId: TEAMMATE, type: "call", disposition: CONNECTED, contactIds: ["Z"], companyIds: ["W"] })],
+      { W: "Westside Auto" }, {}, { Z: { name: "Zed", title: "GM", dm: true } }, owned, ctx, NOW, { calls: true, emails: true },
+    );
+    const book = snap.reps[OWNER].book;
+    expect(book.units_tapped).toBe(1); // owner's book shows it worked
+    const w = book.units.find((u) => u.key === "single:W")!;
+    expect(w.tapped).toBe(true);
+    expect(w.rooftops[0]).toMatchObject({ tapped: true, calls: 1, connected: 1 });
+    expect(snap.reps[TEAMMATE].book.units_total).toBe(0); // teammate owns nothing here
+  });
+});
+
+// ── Monthly new-unique tapped (owned book, last 3 US/Eastern months) ─────────────────
+describe("monthly new-unique (owned book)", () => {
+  const ctx = makeEtContext(NOW); // NOW = 2026-06-29 → current ET month 2026-06
+  const OWNER = "69016314";
+  const LAST_MONTH = Date.UTC(2026, 4, 15, 16); // 2026-05-15 (ET May)
+  const owned = { [OWNER]: [own({ id: "X", name: "Xco" }), own({ id: "Y", name: "Yco" })] };
+  const snap = aggregate(
+    [
+      act({ ownerId: OWNER, companyIds: ["X"], contactIds: ["c1"], timestampMs: LAST_MONTH }), // X first worked last month
+      act({ ownerId: OWNER, companyIds: ["X"], contactIds: ["c1"], timestampMs: NOW }), // X again this month (not new)
+      act({ ownerId: OWNER, companyIds: ["Y"], contactIds: ["c2"], timestampMs: NOW }), // Y first worked this month (new)
+    ],
+    { X: "Xco", Y: "Yco" }, {}, {}, owned, ctx, NOW, { calls: true, emails: true },
+  );
+  const monthly = snap.reps[OWNER].monthly;
+
+  it("returns the last 3 months, newest first", () => {
+    expect(monthly).toHaveLength(3);
+    expect(monthly.map((m) => m.month)).toEqual(["2026-06", "2026-05", "2026-04"]);
+  });
+
+  it("separates NEW rooftops from ones worked in a prior month", () => {
+    expect(monthly[0]).toMatchObject({ rooftops_engaged: 2, rooftops_new: 1 }); // X+Y engaged; only Y new
+    expect(monthly[1]).toMatchObject({ rooftops_engaged: 1, rooftops_new: 1 }); // X engaged + new last month
+  });
+
+  it("separates NEW contacts too", () => {
+    expect(monthly[0].contacts_engaged).toBe(2); // c1 (X) + c2 (Y) touched this month
+    expect(monthly[0].contacts_new).toBe(1); // c2 new; c1 first engaged last month
+  });
+});
