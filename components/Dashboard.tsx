@@ -6,6 +6,9 @@ import {
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
   BookCoverage, CoverageDim,
 } from "../lib/sync/types";
+import {
+  Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download, ShieldCheck,
+} from "lucide-react";
 import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
 import { companyUrl, contactUrl } from "../config/hubspot";
 import { CoachingSnapshot } from "../lib/callquality/types";
@@ -15,10 +18,11 @@ import GdExplorer from "./GdExplorer";
 import CallQualityCard from "./CallQualityCard";
 import LogoutButton from "./LogoutButton";
 import { STAGE_CHIP, TEMP_CHIP, TEMP_ICON } from "./ui-tokens";
+import { Surface, StatTile, Chip, Bar, Avatar, GradeBadge, SortHeader, cn } from "./ui";
 
 const CONNECTED_LABELS = new Set(Object.values(CONNECTED_DISPOSITIONS));
 
-type SortKey = "name" | "quality" | "callq" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
+type SortKey = "name" | "quality" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
 
 interface Row { ownerId: string; name: string; data: RepData; m: PeriodMetrics; touches: number; }
 
@@ -32,15 +36,6 @@ function etStamp(iso: string): string {
     return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }) + " ET";
   } catch { return iso; }
 }
-
-const GRADE_GRAD: Record<string, string> = {
-  A: "from-emerald-400 to-teal-500 text-white",
-  B: "from-sky-400 to-blue-500 text-white",
-  C: "from-amber-400 to-yellow-500 text-white",
-  D: "from-orange-400 to-orange-600 text-white",
-  F: "from-rose-400 to-red-500 text-white",
-  "—": "from-slate-200 to-slate-200 text-slate-400",
-};
 
 export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot>; viewer: Viewer }) {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
@@ -66,7 +61,7 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
   const rows = useMemo<Row[]>(() => {
     const filtered = repFilter === "all" ? allRows : allRows.filter((r) => r.ownerId === repFilter);
     const val = (r: Row): number | string => ({
-      name: r.name.toLowerCase(), quality: r.m.quality.score, callq: coaching[r.ownerId]?.avgBantic ?? -1, touches: r.touches,
+      name: r.name.toLowerCase(), quality: r.m.quality.score, touches: r.touches,
       contacts: r.m.contacts.total, companies: r.m.companies.total, coverage: r.data.book.pct,
       connect: r.m.calls.connect_rate, reply: r.m.emails.reply_rate, meetings: r.m.meetings_booked, hot: r.m.temp.hot,
     }[sortKey]);
@@ -75,7 +70,7 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
       const cmp = typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : (av as number) - (bv as number);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [allRows, repFilter, sortKey, sortDir, coaching]);
+  }, [allRows, repFilter, sortKey, sortDir]);
 
   const summary = useMemo(() => {
     const a = { touches: 0, contacts: 0, companies: 0, calls: 0, connected: 0, denom: 0, meetings: 0, unitsTapped: 0, unitsTotal: 0, hot: 0, active: 0 };
@@ -85,7 +80,7 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
       a.meetings += r.m.meetings_booked; a.unitsTapped += r.data.book.units_tapped; a.unitsTotal += r.data.book.units_total; a.hot += r.m.temp.hot;
       if (r.touches > 0) a.active++;
     }
-    return { ...a, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
+    return { ...a, emails: a.touches - a.calls, connectRate: a.denom ? a.connected / a.denom : 0, coverage: a.unitsTotal ? a.unitsTapped / a.unitsTotal : 0 };
   }, [rows]);
 
   function toggleSort(key: SortKey) {
@@ -94,8 +89,8 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
   }
 
   function exportCsv() {
-    const head = ["Rep","Quality","Grade","CallQ","Touches","Calls","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqCompanies","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
-    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, coaching[r.ownerId]?.avgBantic ?? "", r.touches, m.calls.total, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
+    const head = ["Rep","Quality","Grade","Touches","Calls","Connected","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqRooftops","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
+    const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.calls.connected, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
     const a = document.createElement("a"); a.href = url; a.download = `sdr-outreach-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
@@ -103,91 +98,93 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
   const hasData = !!snapshot.generated_at_utc;
 
   return (
-    <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-2xl font-black tracking-tight text-transparent sm:text-3xl">
-            SDR Outreach Coverage
-          </h1>
-          <p className="mt-1 hidden text-sm text-slate-500 sm:block">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage (GD level) · US/Eastern · week starts Mon</p>
+    <main className="mx-auto max-w-[1500px] px-4 py-7 sm:px-6">
+      <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary text-primary-fg shadow-card">
+            <Activity className="h-5 w-5" strokeWidth={2.4} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-ink sm:text-[28px]">SDR Outreach Coverage</h1>
+            <p className="mt-0.5 hidden text-sm text-ink-muted sm:block">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage · US/Eastern · week starts Mon</p>
+          </div>
         </div>
-        <div className="flex flex-col items-end gap-1 text-right text-xs text-slate-500">
+        <div className="flex flex-col items-end gap-1.5 text-right text-xs text-ink-muted">
           <div className="flex items-center gap-2">
-            <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-slate-500">{viewer.role}</span>
-            {viewer.isAdmin && <a href="/admin" className="text-blue-600 hover:underline">Admin</a>}
+            <Chip tone="primary" className="uppercase tracking-wide"><ShieldCheck className="h-3 w-3" />{viewer.role}</Chip>
+            {viewer.isAdmin && <a href="/admin" className="font-semibold text-primary hover:underline">Admin</a>}
             <LogoutButton />
           </div>
-          <div>Refreshed <span className="font-semibold text-blue-600">{etStamp(snapshot.generated_at_utc)}</span></div>
-          <div>{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
+          <div>Refreshed <span className="font-semibold text-ink">{etStamp(snapshot.generated_at_utc)}</span></div>
+          <div className="tabular-nums">{snapshot.window.start_et || "—"} → {snapshot.window.end_et || "—"} · {fmt(snapshot.totals.calls)} calls + {fmt(snapshot.totals.emails)} emails</div>
         </div>
       </header>
 
-      {!hasData && <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No snapshot yet. Run <code className="rounded bg-slate-100 px-1.5 py-0.5 text-blue-600">npm run sync</code>.</div>}
+      {!hasData && <Surface className="mb-6 p-4 text-sm text-ink-muted">No snapshot yet. Run <code className="rounded bg-surface-muted px-1.5 py-0.5 font-mono text-primary">npm run sync:delta</code>.</Surface>}
       {hasData && snapshot.sources && !snapshot.sources.emails && (
-        <div className="mb-6 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">⚠️ Emails excluded — token lacks <code className="rounded bg-amber-100 px-1.5 py-0.5">connected-email-data-access</code>.</div>
+        <div className="mb-6 rounded-card border border-warn/30 bg-warn-weak p-3 text-sm text-warn">⚠️ Emails excluded — token lacks <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono">connected-email-data-access</code>.</div>
       )}
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-          {PERIOD_KEYS.map((p) => (
-            <button key={p} onClick={() => setPeriod(p)}
-              className={`rounded-xl px-3 py-1.5 text-sm transition ${period === p ? "bg-gradient-to-r from-blue-600 to-indigo-600 font-semibold text-white shadow" : "text-slate-600 hover:bg-slate-100"}`}>
-              {PERIOD_LABELS[p]}
-            </button>
-          ))}
-        </div>
+      <div className="mb-5 flex flex-wrap items-center gap-2.5">
+        <Segmented options={PERIOD_KEYS.map((p) => [p, PERIOD_LABELS[p]] as [string, string])} value={period} onChange={(v) => setPeriod(v as PeriodKey)} />
         {scoped && (
-          <div className="flex gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-            {([["mine", viewer.role === "rep" ? "My data" : "My team"], ["all", "All reps"]] as const).map(([m, label]) => (
-              <button key={m} onClick={() => { setScopeMode(m); setRepFilter("all"); }}
-                className={`rounded-xl px-3 py-1.5 text-sm transition ${scopeMode === m ? "bg-gradient-to-r from-emerald-600 to-teal-600 font-semibold text-white shadow" : "text-slate-600 hover:bg-slate-100"}`}>
-                {label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            tone="good"
+            options={[["mine", viewer.role === "rep" ? "My data" : "My team"], ["all", "All reps"]]}
+            value={scopeMode}
+            onChange={(v) => { setScopeMode(v as "mine" | "all"); setRepFilter("all"); }}
+          />
         )}
-        <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm">
+        <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink-muted shadow-card outline-none focus:ring-2 focus:ring-primary/30">
           <option value="all">All reps ({allRows.length})</option>
           {[...allRows].sort((a, b) => a.name.localeCompare(b.name)).map((r) => <option key={r.ownerId} value={r.ownerId}>{r.name}</option>)}
         </select>
-        <button onClick={exportCsv} className="ml-auto rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 shadow-sm hover:bg-slate-100">↓ CSV</button>
+        <button onClick={exportCsv} className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-line bg-surface px-3 py-2 text-sm font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink">
+          <Download className="h-4 w-4" /> CSV
+        </button>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Card label="Touches" value={fmt(summary.touches)} hint={`${fmt(summary.calls)}☎ ${fmt(summary.touches - summary.calls)}✉`} grad="from-slate-700 to-slate-900" />
-        <Card label="Unique contacts" value={fmt(summary.contacts)} hint="summed per rep" grad="from-blue-500 to-indigo-600" />
-        <Card label="Unique companies" value={fmt(summary.companies)} hint="summed per rep" grad="from-indigo-500 to-violet-600" />
-        <Card label="Book coverage" value={summary.unitsTotal ? pct0(summary.coverage) : "—"} hint={summary.unitsTotal ? `${fmt(summary.unitsTapped)}/${fmt(summary.unitsTotal)} accts` : "—"} grad="from-violet-500 to-fuchsia-600" />
-        <Card label="Connect rate" value={pct(summary.connectRate)} grad="from-emerald-500 to-teal-600" />
-        <Card label="Meetings 🎯" value={fmt(summary.meetings)} hint={`${fmt(summary.hot)} hot 🔥`} grad="from-rose-500 to-orange-500" />
+        <StatTile label="Touches" value={fmt(summary.touches)} icon={Activity} accent="primary"
+          sub={<>{fmt(summary.calls)} dials · {fmt(summary.connected)} conn · {fmt(summary.emails)} email</>} />
+        <StatTile label="Contacts" value={fmt(summary.contacts)} icon={Users} accent="primary" sub="unique · this period" />
+        <StatTile label="Rooftops" value={fmt(summary.companies)} icon={Building2} accent="primary" sub="unique · this period" />
+        <StatTile label="Book coverage" value={summary.unitsTotal ? pct0(summary.coverage) : "—"} icon={Gauge} accent="primary"
+          sub={summary.unitsTotal ? `${fmt(summary.unitsTapped)}/${fmt(summary.unitsTotal)} accounts` : "—"} />
+        <StatTile label="Connect rate" value={pct(summary.connectRate)} icon={PhoneCall} accent="good"
+          sub={`${fmt(summary.connected)}/${fmt(summary.denom)} connected`} />
+        <StatTile label="Meetings" value={fmt(summary.meetings)} icon={CalendarCheck} accent="good"
+          sub={<span className="inline-flex items-center gap-1"><Flame className="h-3 w-3 text-hot" />{fmt(summary.hot)} hot accounts</span>} />
       </div>
 
-      <div className="scroll-x rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full min-w-[1160px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <Th onClick={() => toggleSort("name")} a={sortKey === "name"} d={sortDir}>Rep</Th>
-              <Th onClick={() => toggleSort("quality")} a={sortKey === "quality"} d={sortDir}>Quality</Th>
-              <Th onClick={() => toggleSort("callq")} a={sortKey === "callq"} d={sortDir}>Call Q</Th>
-              <Th right onClick={() => toggleSort("touches")} a={sortKey === "touches"} d={sortDir}>Touches</Th>
-              <Th right onClick={() => toggleSort("contacts")} a={sortKey === "contacts"} d={sortDir}>Contacts</Th>
-              <Th right onClick={() => toggleSort("companies")} a={sortKey === "companies"} d={sortDir}>Cos</Th>
-              <Th onClick={() => toggleSort("coverage")} a={sortKey === "coverage"} d={sortDir}>Coverage</Th>
-              <Th onClick={() => toggleSort("connect")} a={sortKey === "connect"} d={sortDir}>Connect</Th>
-              <Th onClick={() => toggleSort("reply")} a={sortKey === "reply"} d={sortDir}>Reply</Th>
-              <Th right onClick={() => toggleSort("meetings")} a={sortKey === "meetings"} d={sortDir}>🎯</Th>
-              <Th right onClick={() => toggleSort("hot")} a={sortKey === "hot"} d={sortDir}>🔥</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => <RepRow key={r.ownerId} row={r} coach={coaching[r.ownerId]} onOpen={() => setDrawerRep(r.ownerId)} />)}
-          </tbody>
-        </table>
-      </div>
+      <Surface className="overflow-hidden">
+        <div className="scroll-x">
+          <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-line bg-surface-muted text-[11px] font-semibold uppercase tracking-wide">
+                <SortHeader onClick={() => toggleSort("name")} active={sortKey === "name"} dir={sortDir}>Rep</SortHeader>
+                <SortHeader onClick={() => toggleSort("quality")} active={sortKey === "quality"} dir={sortDir}>Quality</SortHeader>
+                <SortHeader right onClick={() => toggleSort("touches")} active={sortKey === "touches"} dir={sortDir}>Touches</SortHeader>
+                <SortHeader right onClick={() => toggleSort("contacts")} active={sortKey === "contacts"} dir={sortDir}>Contacts</SortHeader>
+                <SortHeader right onClick={() => toggleSort("companies")} active={sortKey === "companies"} dir={sortDir}>Rooftops</SortHeader>
+                <SortHeader onClick={() => toggleSort("coverage")} active={sortKey === "coverage"} dir={sortDir}>Coverage</SortHeader>
+                <SortHeader onClick={() => toggleSort("connect")} active={sortKey === "connect"} dir={sortDir}>Connect</SortHeader>
+                <SortHeader right onClick={() => toggleSort("reply")} active={sortKey === "reply"} dir={sortDir}>Reply</SortHeader>
+                <SortHeader right onClick={() => toggleSort("meetings")} active={sortKey === "meetings"} dir={sortDir}>Mtgs</SortHeader>
+                <SortHeader right onClick={() => toggleSort("hot")} active={sortKey === "hot"} dir={sortDir}>Hot</SortHeader>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => <RepRow key={r.ownerId} row={r} onOpen={() => setDrawerRep(r.ownerId)} />)}
+            </tbody>
+          </table>
+        </div>
+      </Surface>
 
-      <p className="mt-4 text-xs text-slate-400">
-        Coverage = cumulative owned accounts (company owner = rep) the rep has ever tapped, rolled up to Group Dealership / Single units. Temperature: 🔥 meeting/high-intent/replied · 🌤 connected/opened · 🧊 no engagement.
-        Quality = conversations · depth · persistence · channel · deliverability. Decision-maker reach via job title/seniority. Per-account detail (HubSpot links) for {NARROW_PERIODS.map((p) => PERIOD_LABELS[p]).join(", ")}.
+      <p className="mt-4 max-w-4xl text-xs leading-relaxed text-ink-subtle">
+        Coverage = cumulative owned accounts (company owner = rep) the rep has ever tapped, rolled up to Group-Dealership / Single units.
+        Temperature reflects buyer intent from call outcomes + engagement — open a rep to see the per-account reason.
+        Quality = conversations · depth · persistence · channel · deliverability. Per-account detail (with HubSpot links) for {NARROW_PERIODS.map((p) => PERIOD_LABELS[p]).join(", ")}.
       </p>
 
       {drawerRep && (() => {
@@ -207,61 +204,66 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
   );
 }
 
-function Card({ label, value, hint, grad }: { label: string; value: string; hint?: string; grad: string }) {
+/* ------------------------------------------------------------------ Home controls */
+
+function Segmented({ options, value, onChange, tone = "primary" }: {
+  options: [string, string][]; value: string; onChange: (v: string) => void; tone?: "primary" | "good";
+}) {
+  const active = tone === "good" ? "bg-good text-white shadow-sm" : "bg-primary text-primary-fg shadow-sm";
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className={`bg-gradient-to-br ${grad} px-4 py-3`}>
-        <div className="text-[11px] font-medium uppercase tracking-wide text-white/80">{label}</div>
-        <div className="mt-0.5 text-2xl font-black tabular-nums text-white">{value}</div>
-      </div>
-      {hint && <div className="px-4 py-1 text-[10px] uppercase tracking-wide text-slate-400">{hint}</div>}
+    <div className="flex flex-wrap gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
+      {options.map(([v, label]) => (
+        <button key={v} onClick={() => onChange(v)}
+          className={cn("rounded-lg px-3 py-1.5 text-sm font-medium transition", value === v ? active : "text-ink-muted hover:bg-surface-muted hover:text-ink")}>
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
 
-function Th({ children, onClick, a, d, right }: { children: React.ReactNode; onClick: () => void; a: boolean; d: "asc" | "desc"; right?: boolean }) {
-  return (
-    <th className={`px-3 py-2.5 ${right ? "text-right" : ""}`}>
-      <button onClick={onClick} className={`inline-flex items-center gap-1 hover:text-slate-900 ${a ? "text-slate-900" : ""}`}>{children}<span className="text-[9px]">{a ? (d === "asc" ? "▲" : "▼") : "↕"}</span></button>
-    </th>
-  );
-}
-
-function GradeBadge({ grade, score, big }: { grade: string; score: number; big?: boolean }) {
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-xl bg-gradient-to-br font-bold ${GRADE_GRAD[grade] ?? GRADE_GRAD["—"]} ${big ? "px-3 py-1.5 text-lg" : "px-2 py-0.5 text-xs"}`}>
-      {grade}{grade !== "—" && <span className="font-medium opacity-80">{score}</span>}
-    </span>
-  );
-}
-
-function MiniBar({ x, color }: { x: number; color: string }) {
-  return <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200"><div className={`h-full ${color}`} style={{ width: pct0(x) }} /></div>;
-}
-
-function RepRow({ row, coach, onOpen }: { row: Row; coach?: CoachingSnapshot; onOpen: () => void }) {
+function RepRow({ row, onOpen }: { row: Row; onOpen: () => void }) {
   const m = row.m;
   const dim = row.touches === 0;
   return (
-    <tr onClick={onOpen} className={`cursor-pointer border-b border-slate-100 transition hover:bg-blue-50/50 ${dim ? "opacity-50" : ""}`}>
-      <td className="px-3 py-2.5 font-semibold text-slate-800">{row.name}</td>
-      <td className="px-3 py-2.5"><GradeBadge grade={m.quality.grade} score={m.quality.score} /></td>
+    <tr onClick={onOpen} className={cn("cursor-pointer border-b border-line/70 transition-colors last:border-0 hover:bg-primary-weak/50", dim && "opacity-45")}>
       <td className="px-3 py-2.5">
-        {coach?.avgBantic != null
-          ? <span className="rounded-lg bg-indigo-50 px-2 py-0.5 text-xs font-bold tabular-nums text-indigo-700 ring-1 ring-indigo-200">{coach.avgBantic.toFixed(1)}<span className="font-medium opacity-60">/10</span></span>
-          : <span className="text-xs text-slate-300">—</span>}
+        <div className="flex items-center gap-2.5">
+          <Avatar name={row.name} />
+          <span className="font-semibold text-ink">{row.name}</span>
+        </div>
       </td>
-      <td className="px-3 py-2.5 text-right font-bold tabular-nums text-slate-900">{fmt(row.touches)}</td>
-      <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.contacts.total)}<span className="ml-1 text-[10px] text-slate-400">☎{fmt(m.contacts.via_call)}/✉{fmt(m.contacts.via_email)}</span></td>
-      <td className="px-3 py-2.5 text-right tabular-nums">{fmt(m.companies.total)}</td>
-      <td className="px-3 py-2.5">{row.data.book.units_total > 0 ? <div className="flex items-center gap-2"><MiniBar x={row.data.book.pct} color="bg-gradient-to-r from-violet-500 to-fuchsia-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(row.data.book.pct)}</span></div> : <span className="text-xs text-slate-300">—</span>}</td>
-      <td className="px-3 py-2.5"><div className="flex items-center gap-2"><MiniBar x={m.calls.connect_rate} color="bg-emerald-500" /><span className="tabular-nums text-xs text-slate-500">{pct0(m.calls.connect_rate)}</span></div></td>
-      <td className="px-3 py-2.5 tabular-nums text-xs text-slate-500">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
-      <td className="px-3 py-2.5 text-right tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-emerald-600">{m.meetings_booked}</span> : <span className="text-slate-300">0</span>}</td>
-      <td className="px-3 py-2.5 text-right tabular-nums">{m.temp.hot > 0 ? <span className="font-bold text-rose-600">{m.temp.hot}</span> : <span className="text-slate-300">0</span>}</td>
+      <td className="px-3 py-2.5"><GradeBadge grade={m.quality.grade} score={m.quality.score} /></td>
+      <td className="px-3 py-2.5 text-right">
+        <div className="font-mono font-bold tabular-nums text-ink">{fmt(row.touches)}</div>
+        <div className="mt-0.5 text-[10px] tabular-nums text-ink-subtle">{fmt(m.calls.total)}d · {fmt(m.calls.connected)}c · {fmt(m.emails.sent)}e</div>
+      </td>
+      <td className="px-3 py-2.5 text-right">
+        <div className="font-mono tabular-nums text-ink">{fmt(m.contacts.total)}</div>
+        <div className="mt-0.5 inline-flex items-center gap-1.5 text-[10px] tabular-nums text-ink-subtle">
+          <Phone className="h-2.5 w-2.5" />{fmt(m.contacts.via_call)}<Mail className="ml-0.5 h-2.5 w-2.5" />{fmt(m.contacts.via_email)}
+        </div>
+      </td>
+      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink">{fmt(m.companies.total)}</td>
+      <td className="px-3 py-2.5">
+        {row.data.book.units_total > 0
+          ? <div className="flex items-center gap-2"><Bar value={row.data.book.pct} tone="primary" /><span className="font-mono text-xs tabular-nums text-ink-muted">{pct0(row.data.book.pct)}</span></div>
+          : <span className="text-xs text-ink-subtle">—</span>}
+      </td>
+      <td className="px-3 py-2.5">
+        <div className="flex items-center gap-2"><Bar value={m.calls.connect_rate} tone="good" /><span className="font-mono text-xs tabular-nums text-ink-muted">{pct0(m.calls.connect_rate)}</span></div>
+      </td>
+      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums text-ink-muted">{m.emails.sent > 0 ? pct0(m.emails.reply_rate) : "—"}</td>
+      <td className="px-3 py-2.5 text-right font-mono tabular-nums">{m.meetings_booked > 0 ? <span className="font-bold text-good">{m.meetings_booked}</span> : <span className="text-ink-subtle">0</span>}</td>
+      <td className="px-3 py-2.5 text-right font-mono tabular-nums">{m.temp.hot > 0 ? <span className="font-bold text-hot">{m.temp.hot}</span> : <span className="text-ink-subtle">0</span>}</td>
     </tr>
   );
 }
+
+/* ================================================================== Drawer body (Scorecard)
+ * Unchanged in Phase 1 — the drawer gets its table-first redesign in Phase 3. Kept intact here
+ * (children-injection pattern into RepDrawer to avoid an import cycle).
+ * ================================================================== */
 
 function Scorecard({ data, m, period, name, coach, ownerId }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; coach?: CoachingSnapshot; ownerId: string }) {
   return (
