@@ -23,7 +23,21 @@ function coerce(raw: unknown): AgentVerdict | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const why_hot = typeof o.why_hot === "string" ? o.why_hot.trim() : "";
-  const next_step = typeof o.next_step === "string" ? o.next_step.trim() : "";
+  
+  let next_step = "";
+  if (typeof o.action === "string" && o.action.trim()) {
+    const nextStepObj = {
+      action: o.action.trim(),
+      contactName: typeof o.contact_name === "string" && o.contact_name.trim() ? o.contact_name.trim() : null,
+      contactTitle: typeof o.contact_title === "string" && o.contact_title.trim() ? o.contact_title.trim() : null,
+      channel: typeof o.channel === "string" && (o.channel === "call" || o.channel === "email") ? o.channel : "call",
+      helperText: typeof o.helper_text === "string" && o.helper_text.trim() ? o.helper_text.trim() : "",
+    };
+    next_step = JSON.stringify(nextStepObj);
+  } else if (typeof o.next_step === "string" && o.next_step.trim()) {
+    next_step = o.next_step.trim();
+  }
+
   if (!why_hot || !next_step) return null;
   const priority = PRIORITIES.includes(o.priority as Priority) ? (o.priority as Priority) : "medium";
   const status = STATUSES.includes(o.status as WatchStatus) ? (o.status as WatchStatus) : "watching";

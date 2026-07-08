@@ -1,11 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Flame, ExternalLink, ArrowRight, Sparkles } from "lucide-react";
+import { Flame, ExternalLink, ArrowRight, Sparkles, ChevronDown, ChevronUp, Copy, Check, Mail, Phone, User, Star } from "lucide-react";
 import { AgentWatch, Priority, WatchStatus } from "../lib/agent/types";
 import { REPS } from "../config/reps";
 import { companyUrl } from "../config/hubspot";
 import { Surface, Chip, cn } from "./ui";
+import { TEMP_CHIP_WEAK, TEMP_LABEL } from "./ui-tokens";
+
+interface NextStepDetails {
+  action: string;
+  contactName: string | null;
+  contactTitle: string | null;
+  channel: "call" | "email";
+  helperText: string;
+}
 
 const PRIO_ORDER: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 const PRIO_TONE: Record<Priority, "danger" | "warn" | "neutral"> = { high: "danger", medium: "warn", low: "neutral" };
@@ -16,21 +25,43 @@ const STATUS_LABEL: Record<WatchStatus, string> = {
   watching: "Watching", meeting_booked: "Meeting booked", drop_off: "Dropped off", closed: "Closed",
 };
 
-function ago(iso: string | null): string {
+function formatSignalDate(ms: number | null | undefined): string {
+  if (!ms) return "—";
+  try {
+    return new Date(ms).toLocaleDateString("en-US", {
+      timeZone: "America/New_York",
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    });
+  } catch { return "—"; }
+}
+
+function formatReviewedTime(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) + " ET";
+    return new Date(iso).toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }) + " ET";
   } catch { return "—"; }
 }
 
 export default function AttentionBoard({ watches }: { watches: AgentWatch[] }) {
   const [repFilter, setRepFilter] = useState("all");
   const [prio, setPrio] = useState<"all" | Priority>("all");
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const reps = useMemo(
     () => [...new Set(watches.map((w) => w.repId).filter(Boolean))] as string[],
     [watches],
   );
+
   const rows = useMemo(
     () => watches
       .filter((w) => w.status !== "closed" && w.status !== "drop_off")
@@ -49,6 +80,16 @@ export default function AttentionBoard({ watches }: { watches: AgentWatch[] }) {
     }
     return c;
   }, [watches]);
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleCopy = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   if (!watches.length) {
     return (
@@ -91,35 +132,215 @@ export default function AttentionBoard({ watches }: { watches: AgentWatch[] }) {
       </div>
 
       {rows.length === 0 ? <Surface className="p-6 text-center text-sm text-ink-subtle">No accounts match this filter.</Surface> : (
-        <div className="space-y-2.5">
-          {rows.map((w) => (
-            <Surface key={w.accountId} className="p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Flame className="h-4 w-4 shrink-0 text-hot" />
-                  <a href={companyUrl(w.accountId)} target="_blank" rel="noopener noreferrer" className="truncate font-semibold text-ink hover:text-primary">{w.accountName ?? w.accountId}</a>
-                  <ExternalLink className="h-3 w-3 shrink-0 text-ink-subtle" />
-                  <span className="text-xs text-ink-subtle">· {REPS[w.repId ?? ""] ?? w.repId}</span>
-                </div>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  {w.priority && <Chip tone={PRIO_TONE[w.priority]} className="uppercase">{w.priority}</Chip>}
-                  <Chip tone={STATUS_TONE[w.status]}>{STATUS_LABEL[w.status]}</Chip>
-                </div>
-              </div>
-              {w.reason && <p className="mt-2 text-sm text-ink-muted">{w.reason}</p>}
-              {w.nextStep && (
-                <div className="mt-2 flex items-start gap-2 rounded-xl bg-primary-weak px-3 py-2 text-sm text-primary">
-                  <ArrowRight className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span className="font-medium">{w.nextStep}</span>
-                </div>
-              )}
-              <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-ink-subtle">
-                <span>Reviewed {ago(w.lastReviewedAt)}</span>
-                {w.confidence != null && <span>Confidence {Math.round(w.confidence * 100)}%</span>}
-                {w.model && <span className="font-mono">{w.model}</span>}
-              </div>
-            </Surface>
-          ))}
+        <div className="overflow-x-auto rounded-xl border border-line bg-surface shadow-card">
+          <table className="w-full border-collapse text-left text-sm text-ink">
+            <thead className="bg-surface-muted/60 text-xs font-semibold uppercase tracking-wider text-ink-muted border-b border-line">
+              <tr>
+                <th className="px-4 py-3.5 min-w-[120px]">SDR</th>
+                <th className="px-4 py-3.5 min-w-[160px]">Company</th>
+                <th className="px-4 py-3.5 min-w-[150px]">Contact</th>
+                <th className="px-4 py-3.5 text-center w-[80px]">Temp</th>
+                <th className="px-4 py-3.5 min-w-[110px]">Last Activity</th>
+                <th className="px-4 py-3.5 min-w-[220px]">Hot Reason</th>
+                <th className="px-4 py-3.5 min-w-[240px]">Next Touch Action</th>
+                <th className="px-4 py-3.5 w-[50px]"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {rows.map((w) => {
+                let details: NextStepDetails | null = null;
+                try {
+                  if (w.nextStep && w.nextStep.startsWith("{")) {
+                    details = JSON.parse(w.nextStep);
+                  }
+                } catch {
+                  // Fallback to plain text next step
+                }
+
+                const isExpanded = !!expandedIds[w.accountId];
+                const hasHelper = details && details.helperText;
+
+                return (
+                  <optgroup key={w.accountId} label={w.accountName || w.accountId} className="m-0 p-0 border-none font-normal [content-visibility:auto]">
+                    <tr className={cn(
+                      "hover:bg-surface-muted/30 transition-colors cursor-pointer align-top",
+                      isExpanded && "bg-primary-weak/10 hover:bg-primary-weak/20"
+                    )} onClick={() => toggleExpand(w.accountId)}>
+                      <td className="px-4 py-4 font-medium text-ink-muted">
+                        {REPS[w.repId ?? ""] ?? w.repId}
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                          <Flame className="h-4 w-4 shrink-0 text-hot" />
+                          <a href={companyUrl(w.accountId)} target="_blank" rel="noopener noreferrer" className="font-semibold text-ink hover:text-primary hover:underline truncate">
+                            {w.accountName ?? w.accountId}
+                          </a>
+                          <ExternalLink className="h-3 w-3 shrink-0 text-ink-subtle" />
+                        </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        {details ? (
+                          details.contactName ? (
+                            <div className="space-y-0.5">
+                              <div className="font-medium flex items-center gap-1">
+                                <User className="h-3 w-3 text-ink-muted" />
+                                <span className="truncate">{details.contactName}</span>
+                              </div>
+                              {details.contactTitle && (
+                                <div className="text-xs text-ink-subtle truncate pl-4">
+                                  {details.contactTitle}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-ink-subtle italic">—</span>
+                          )
+                        ) : (
+                          <span className="text-ink-subtle italic">See action</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 text-center">
+                        <span className={cn("px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider", TEMP_CHIP_WEAK[w.temp ?? "cold"])}>
+                          {TEMP_LABEL[w.temp ?? "cold"]}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-ink-muted whitespace-nowrap">
+                        {formatSignalDate(w.lastSignalMs)}
+                      </td>
+                      <td className="px-4 py-4 text-ink-muted text-xs leading-relaxed max-w-[300px]">
+                        {w.reason}
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex items-start gap-1.5 text-xs text-primary font-semibold">
+                            <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span>{details ? details.action : w.nextStep}</span>
+                          </div>
+                          {details && details.helperText && (
+                            <span className="inline-flex self-start items-center gap-1 rounded bg-primary text-[10px] text-white px-1.5 py-0.5 font-bold uppercase cursor-pointer hover:bg-primary-hover shadow-sm">
+                              {details.channel === "call" ? <Phone className="h-2.5 w-2.5" /> : <Mail className="h-2.5 w-2.5" />}
+                              {details.channel === "call" ? "Call Script" : "Email Template"}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 text-right">
+                        <button className="text-ink-subtle hover:text-ink">
+                          {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-surface-muted/20">
+                        <td colSpan={8} className="px-6 py-4 border-b border-line">
+                          <div className="rounded-xl border border-line bg-surface p-4 shadow-sm space-y-4">
+                            <div className="flex items-center justify-between border-b border-line pb-2.5">
+                              <div className="flex items-center gap-2">
+                                <Sparkles className="h-4.5 w-4.5 text-primary" />
+                                <span className="font-bold text-ink">Deep Agent Action Plan & Helper Draft</span>
+                              </div>
+                              <div className="flex items-center gap-3 text-xs text-ink-subtle">
+                                <span>Reviewed {formatReviewedTime(w.lastReviewedAt)}</span>
+                                {w.confidence != null && <span>Confidence {Math.round(w.confidence * 100)}%</span>}
+                                {w.model && <span className="font-mono bg-surface-muted px-1.5 py-0.5 rounded">{w.model}</span>}
+                              </div>
+                            </div>
+                            
+                            {details ? (
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="space-y-3 border-r border-line/60 pr-4 md:col-span-1">
+                                  <div>
+                                    <div className="text-[10px] font-bold uppercase tracking-wider text-ink-subtle">Target Prospect</div>
+                                    <div className="mt-1 flex items-start gap-1.5">
+                                      <div className="h-8 w-8 rounded-full bg-primary-weak text-primary flex items-center justify-center font-bold text-xs uppercase shrink-0">
+                                        {details.contactName ? details.contactName.charAt(0) : "P"}
+                                      </div>
+                                      <div>
+                                        <div className="font-semibold text-sm text-ink">{details.contactName || "Unknown Contact"}</div>
+                                        <div className="text-xs text-ink-muted">{details.contactTitle || "No Title Listed"}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  
+                                  <div>
+                                    <div className="text-[10px] font-bold uppercase tracking-wider text-ink-subtle">Outreach Channel</div>
+                                    <div className="mt-1.5">
+                                      <span className={cn(
+                                        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wider",
+                                        details.channel === "call" ? "bg-blue-100 text-blue-800" : "bg-green-100 text-green-800"
+                                      )}>
+                                        {details.channel === "call" ? <Phone className="h-3 w-3" /> : <Mail className="h-3 w-3" />}
+                                        {details.channel === "call" ? "Phone Call" : "Email"}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div className="text-[10px] font-bold uppercase tracking-wider text-ink-subtle">Action Command</div>
+                                    <div className="mt-1 text-xs text-ink leading-relaxed font-medium">
+                                      {details.action}
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                <div className="md:col-span-2 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <div className="text-[10px] font-bold uppercase tracking-wider text-ink-subtle">
+                                      {details.channel === "call" ? "SDR Call Script" : "Personalized Email Draft"}
+                                    </div>
+                                    {details.helperText && (
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCopy(w.accountId, details.helperText);
+                                        }}
+                                        className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary-hover px-2 py-1 rounded hover:bg-primary-weak/40 transition"
+                                      >
+                                        {copiedId === w.accountId ? (
+                                          <>
+                                            <Check className="h-3.5 w-3.5" />
+                                            <span>Copied!</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Copy className="h-3.5 w-3.5" />
+                                            <span>Copy Draft</span>
+                                          </>
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
+                                  {details.helperText ? (
+                                    <pre className="p-3 bg-surface-muted rounded-xl text-xs text-ink font-mono border border-line overflow-x-auto whitespace-pre-wrap leading-relaxed shadow-inner max-h-[220px]">
+                                      {details.helperText}
+                                    </pre>
+                                  ) : (
+                                    <div className="p-3 bg-surface-muted/65 rounded-xl text-xs text-ink-subtle italic border border-line/60">
+                                      No script or email template details were generated for this next step.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-ink-subtle">Plain Text Next Step</div>
+                                <p className="text-sm text-ink font-medium bg-surface-muted p-3 rounded-xl border border-line leading-relaxed">
+                                  {w.nextStep}
+                                </p>
+                                <p className="text-xs text-ink-subtle italic">
+                                  Note: This action recommendation was generated by an older agent run and does not contain detailed target scripts or target contact name mapping.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </optgroup>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
