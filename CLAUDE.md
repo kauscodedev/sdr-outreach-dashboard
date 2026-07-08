@@ -132,8 +132,9 @@ reaches the client with the page — see the `stripBookUnits` rule under Convent
 - **Secrets live only in `.env.local` / Vercel / GitHub secrets** — `HUBSPOT_PAT` (required for
   sync), three Supabase vars required by the web app: `NEXT_PUBLIC_SUPABASE_URL`,
   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) and `SUPABASE_SERVICE_ROLE_KEY` (server-only spine +
-  call-quality reads), and `CRON_SECRET` (optional; only the `/api/sync/delta` alt-trigger route
-  needs it — the crons call the npm script directly). **In production the middleware fails CLOSED
+  call-quality reads), `CRON_SECRET` (optional; only the `/api/sync/delta` alt-trigger route
+  needs it — the crons call the npm script directly), and `BLOB_READ_WRITE_TOKEN` (optional; still
+  gates the second, Blob fallback in `getSnapshot`, behind the spine). **In production the middleware fails CLOSED
   (503 on every route) if the two `NEXT_PUBLIC_SUPABASE_*` vars are missing** — set them in Vercel
   before deploying. The GitHub Actions crons need repo secrets `HUBSPOT_PAT`, `SUPABASE_URL` (=
   the `NEXT_PUBLIC_SUPABASE_URL` value) and `SUPABASE_SERVICE_ROLE_KEY`. Never commit any of these.

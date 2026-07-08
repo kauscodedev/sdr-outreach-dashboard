@@ -7,8 +7,6 @@ import { REP_OWNER_IDS } from "../../config/reps";
 import { Viewer } from "../spine/types";
 import { decideScope } from "./scope";
 
-export { decideScope };
-
 /** Server-side resolution. NEVER throws — failure degrades to org-wide viewer. */
 export async function resolveViewer(email: string): Promise<Viewer> {
   const fallback: Viewer = { email, role: "viewer", defaultOwnerIds: [...REP_OWNER_IDS], isAdmin: false };

@@ -139,7 +139,7 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
         {scoped && (
           <div className="flex gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
             {([["mine", viewer.role === "rep" ? "My data" : "My team"], ["all", "All reps"]] as const).map(([m, label]) => (
-              <button key={m} onClick={() => setScopeMode(m)}
+              <button key={m} onClick={() => { setScopeMode(m); setRepFilter("all"); }}
                 className={`rounded-xl px-3 py-1.5 text-sm transition ${scopeMode === m ? "bg-gradient-to-r from-emerald-600 to-teal-600 font-semibold text-white shadow" : "text-slate-600 hover:bg-slate-100"}`}>
                 {label}
               </button>

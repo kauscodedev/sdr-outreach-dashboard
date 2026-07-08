@@ -82,8 +82,17 @@ async function persistResolved(raw: RawActivity[]) {
   return activities.length;
 }
 
-async function reaggregate(caps: PullCaps) {
+/** Rebuild the snapshot row from the spine. `expectData` guards the unattended cron:
+ *  a delta/reconcile run should always find activities in the spine, so an empty read
+ *  means a regression (bad anchor, fetchAll fault) — throw rather than silently
+ *  overwrite the good snapshot row (which outranks the file fallback) with nothing.
+ *  Backfill passes false: it is the run that legitimately populates an empty spine. */
+async function reaggregate(caps: PullCaps, expectData: boolean) {
   const store = await loadStoreForAggregate(anchorMs());
+  if (expectData && store.activities.length === 0) {
+    throw new Error("[spine] aggregate guard: spine returned 0 activities when data was expected — " +
+      "refusing to overwrite the snapshot (check COVERAGE_ANCHOR and the store read).");
+  }
   const ctx = makeEtContext(Date.now());
   const snap = aggregate(store.activities, store.companyNames, store.companyGdStage,
     store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps);
@@ -114,7 +123,7 @@ export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
       })));
     }
     const ownerCount = await refreshOwnersTeams();
-    const totals = await reaggregate(caps);
+    const totals = await reaggregate(caps, true);
 
     const calls = raw.filter((r) => r.type === "call");
     const emails = raw.filter((r) => r.type === "email");
@@ -149,7 +158,7 @@ export async function runBackfill(caps: PullCaps) {
     })));
     await reconcileOwnedCompanies(rows);
     await refreshOwnersTeams();
-    const totals = await reaggregate(caps);
+    const totals = await reaggregate(caps, false); // backfill legitimately populates an empty spine
     // Watermark = run start − overlap: nothing modified after t0 can have been missed
     // by the pull, and the next delta re-reads the small overlap window on top.
     const wm = t0 - OVERLAP_MS;
@@ -180,7 +189,7 @@ export async function runReconcile(caps?: PullCaps) {
     const raw = await pullActivities(since, Date.now(), caps);
     await persistResolved(raw);
     await refreshOwnersTeams();
-    await reaggregate(caps);
+    await reaggregate(caps, true);
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `reconcile ok (cleared ${cleared} stale owners)` });
     console.log(`[reconcile] done in ${((Date.now() - t0) / 60000).toFixed(1)}m.`);
   } finally {
