@@ -232,7 +232,7 @@ export interface CompanyBreakdownRow {
   replied: number; // emails replied
   last_ms: number | null; // epoch ms of the account's most recent touch this period
   owned: boolean; // is this company in the rep's owned book?
-  contacts_list?: ContactRef[]; // who, with HubSpot record links (narrow periods)
+  contacts_list?: RooftopContact[]; // engaged contacts w/ recency + temp (narrow periods)
 }
 
 /** One IST calendar day of a rep's activity — for the per-rep trend chart. */

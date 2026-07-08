@@ -1,28 +1,33 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   PERIOD_KEYS, PERIOD_LABELS, NARROW_PERIODS, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS,
   PeriodKey, PeriodMetrics, RepData, Snapshot, DailyPoint, ReachByChannel, Insight, StageGroup,
-  BookCoverage, CoverageDim,
+  BookCoverage, CoverageDim, CompanyBreakdownRow,
 } from "../lib/sync/types";
 import {
   Activity, Users, Building2, Gauge, PhoneCall, CalendarCheck, Flame, Phone, Mail, Download, ShieldCheck,
+  AlertTriangle, ExternalLink,
 } from "lucide-react";
 import { CONNECTED_DISPOSITIONS } from "../config/dispositions";
-import { companyUrl, contactUrl } from "../config/hubspot";
+import { companyUrl } from "../config/hubspot";
 import { CoachingSnapshot } from "../lib/callquality/types";
 import { Viewer } from "../lib/spine/types";
 import RepDrawer from "./RepDrawer";
 import GdExplorer from "./GdExplorer";
-import CallQualityCard from "./CallQualityCard";
 import LogoutButton from "./LogoutButton";
-import { STAGE_CHIP, TEMP_CHIP, TEMP_ICON } from "./ui-tokens";
-import { Surface, StatTile, Chip, Bar, Avatar, GradeBadge, SortHeader, cn } from "./ui";
+import { STAGE_CHIP } from "./ui-tokens";
+import { Surface, SectionTitle, StatTile, Chip, Bar, Avatar, GradeBadge, SortHeader, TEMP_META, cn } from "./ui";
+import { RooftopsTable, RooftopNode } from "./AccountsTable";
+
+// Literal temperature color classes so Tailwind's JIT keeps them (dynamic `text-${k}` would be purged).
+const TEMP_TEXT: Record<"hot" | "warm" | "cold", string> = { hot: "text-hot", warm: "text-warm", cold: "text-cold" };
 
 const CONNECTED_LABELS = new Set(Object.values(CONNECTED_DISPOSITIONS));
 
 type SortKey = "name" | "quality" | "touches" | "contacts" | "companies" | "coverage" | "connect" | "reply" | "meetings" | "hot";
+type AcctFilter = "all" | "hot" | "warm" | "cold" | "meetings" | "disqualified";
 
 interface Row { ownerId: string; name: string; data: RepData; m: PeriodMetrics; touches: number; }
 
@@ -37,7 +42,7 @@ function etStamp(iso: string): string {
   } catch { return iso; }
 }
 
-export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot>; viewer: Viewer }) {
+export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; coaching: Record<string, CoachingSnapshot>; viewer: Viewer }) {
   const [period, setPeriod] = useState<PeriodKey>("this_week");
   const [repFilter, setRepFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("touches");
@@ -196,7 +201,7 @@ export default function Dashboard({ snapshot, coaching, viewer }: { snapshot: Sn
             subtitle={PERIOD_LABELS[period]}
             onClose={closeDrawer}
           >
-            <Scorecard key={drawerRep} data={r.data} m={r.m} period={period} name={r.name} coach={coaching[drawerRep]} ownerId={drawerRep} />
+            <Scorecard key={drawerRep} data={r.data} m={r.m} period={period} name={r.name} ownerId={drawerRep} />
           </RepDrawer>
         ) : null;
       })()}
@@ -260,213 +265,309 @@ function RepRow({ row, onOpen }: { row: Row; onOpen: () => void }) {
   );
 }
 
-/* ================================================================== Drawer body (Scorecard)
- * Unchanged in Phase 1 — the drawer gets its table-first redesign in Phase 3. Kept intact here
- * (children-injection pattern into RepDrawer to avoid an import cycle).
- * ================================================================== */
+/* ================================================================== Drawer body (Scorecard) */
 
-function Scorecard({ data, m, period, name, coach, ownerId }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; coach?: CoachingSnapshot; ownerId: string }) {
+function Scorecard({ data, m, period, name, ownerId }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; ownerId: string }) {
+  const [acctFilter, setAcctFilter] = useState<AcctFilter>("all");
+  const acctRef = useRef<HTMLDivElement>(null);
+  const hasBreakdown = NARROW_PERIODS.includes(period);
+
+  const focusAccounts = useCallback((f: AcctFilter) => {
+    setAcctFilter(f);
+    requestAnimationFrame(() => acctRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, []);
+
   return (
     <div className="space-y-5">
-      <InsightChips insights={m.insights} />
+      <InsightChips insights={m.insights} hasBreakdown={hasBreakdown} onMeetings={() => focusAccounts("meetings")} onHot={() => focusAccounts("hot")} />
       <KpiStrip m={m} />
       <GdExplorer ownerId={ownerId} book={data.book} />
       <div className="grid gap-5 lg:grid-cols-2">
         <CoverageCard book={data.book} />
-        <TempCard m={m} />
+        <TempCard m={m} clickable={hasBreakdown} onPick={focusAccounts} />
       </div>
-      <CallQualityCard coach={coach} ownerId={ownerId} />
       <div className="grid gap-5 lg:grid-cols-3">
         <ReachCard m={m} />
         <QualityCard m={m} />
         <EmailCard m={m} />
       </div>
       <DailyChart daily={data.daily} name={name} />
-      <div className="grid gap-5 lg:grid-cols-2">
-        <DispositionCard m={m} />
-        <CompaniesCard m={m} period={period} book={data.book} />
+      <DispositionCard m={m} />
+      <div ref={acctRef}>
+        <CompaniesCard m={m} period={period} book={data.book} filter={acctFilter} setFilter={setAcctFilter} />
       </div>
     </div>
   );
 }
 
-function InsightChips({ insights }: { insights: Insight[] }) {
+function InsightChips({ insights, hasBreakdown, onMeetings, onHot }: { insights: Insight[]; hasBreakdown: boolean; onMeetings: () => void; onHot: () => void }) {
   if (!insights?.length) return null;
-  const tone = (l: Insight["level"]) => l === "good" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : l === "warn" ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-slate-50 text-slate-600 ring-slate-200";
-  return <div className="flex flex-wrap gap-2">{insights.map((i, idx) => <span key={idx} className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${tone(i.level)}`}>{i.text}</span>)}</div>;
-}
-
-function KpiStrip({ m }: { m: PeriodMetrics }) {
-  const items = [
-    { l: "Calls", v: fmt(m.calls.total) }, { l: "Emails", v: fmt(m.emails.sent) },
-    { l: "Connect", v: pct(m.calls.connect_rate) }, { l: "Open", v: m.emails.sent ? pct(m.emails.open_rate) : "—" },
-    { l: "Reply", v: m.emails.sent ? pct(m.emails.reply_rate) : "—" }, { l: "Meetings", v: fmt(m.meetings_booked) },
-    { l: "DM reach", v: m.titled_contacts ? `${fmt(m.dm_contacts)}/${fmt(m.titled_contacts)}` : "—" }, { l: "Contacts/acct", v: m.avg_contacts_per_company.toFixed(1) },
-  ];
+  const tone = (l: Insight["level"]) => l === "good" ? "bg-good-weak text-good" : l === "warn" ? "bg-warn-weak text-warn" : "bg-surface-muted text-ink-muted";
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-      {items.map((it) => <div key={it.l} className="rounded-xl border border-slate-200 bg-white px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-slate-400">{it.l}</div><div className="text-lg font-bold tabular-nums text-slate-800">{it.v}</div></div>)}
-    </div>
-  );
-}
-
-function Legend({ color, label }: { color: string; label: string }) {
-  return <span className="inline-flex items-center gap-1"><span className={`inline-block h-2 w-2 rounded-sm ${color}`} />{label}</span>;
-}
-
-function Donut({ pct: p, label }: { pct: number; label: string }) {
-  const deg = Math.round(p * 360);
-  return (
-    <div className="relative h-20 w-20 shrink-0">
-      <div className="h-20 w-20 rounded-full" style={{ background: `conic-gradient(#8b5cf6 ${deg}deg, #e2e8f0 0)` }} />
-      <div className="absolute inset-[6px] flex items-center justify-center rounded-full bg-white"><span className="text-sm font-bold tabular-nums text-slate-800">{label}</span></div>
-    </div>
-  );
-}
-
-function CoverageBar({ label, dim, chip }: { label: string; dim: CoverageDim; chip?: string }) {
-  if (dim.total === 0) return null;
-  const p = dim.tapped / dim.total;
-  return (
-    <div className="text-xs">
-      <div className="flex justify-between">
-        <span className={chip ? `rounded px-1.5 py-0.5 ${chip}` : "text-slate-600"}>{label}</span>
-        <span className="tabular-nums text-slate-500">{fmt(dim.tapped)}/{fmt(dim.total)} · {pct0(p)}</span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500" style={{ width: pct0(p) }} /></div>
-    </div>
-  );
-}
-
-function CoverageCard({ book }: { book: BookCoverage }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-1">
-        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Owned-book coverage (cumulative · GD level)</h3>
-        {book.units_total > 0 && <span className="text-[11px] text-slate-400">{fmt(book.gds)} GDs · {fmt(book.singles)} singles · {fmt(book.rooftops_total)} rooftops</span>}
-      </div>
-      {book.units_total === 0 ? <p className="text-sm text-slate-400">No owned accounts for this rep.</p> : (
-        <div className="flex items-start gap-4">
-          <div className="flex flex-col items-center gap-1"><Donut pct={book.pct} label={pct0(book.pct)} /><div className="text-[11px] text-slate-500">{fmt(book.units_tapped)}/{fmt(book.units_total)} tapped</div></div>
-          <div className="flex-1 space-y-3">
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">By lifecycle stage</div>
-              <div className="space-y-2">{STAGE_GROUPS.map((g) => <CoverageBar key={g} label={g} dim={book.by_stage[g]} chip={STAGE_CHIP[g]} />)}</div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Group vs single · franchise vs independent</div>
-              <div className="space-y-2">
-                <CoverageBar label="Group dealerships" dim={book.by_group_kind.group} />
-                <CoverageBar label="Singles" dim={book.by_group_kind.single} />
-                <CoverageBar label="Franchise" dim={book.by_dealership.Franchise} />
-                <CoverageBar label="Independent" dim={book.by_dealership.Independent} />
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">By market segment</div>
-              <div className="space-y-2">{MARKET_SEGMENTS.map((s) => <CoverageBar key={s} label={MARKET_SEGMENT_LABELS[s]} dim={book.by_segment[s]} />)}</div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TempCard({ m }: { m: PeriodMetrics }) {
-  const t = m.temp;
-  const total = Math.max(1, t.hot + t.warm + t.cold);
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Account temperature (tapped)</h3>
-      <div className="mb-3 flex gap-3">
-        {(["hot","warm","cold"] as const).map((k) => (
-          <div key={k} className={`flex-1 rounded-xl px-3 py-2 text-center ${TEMP_CHIP[k]}`}>
-            <div className="text-2xl font-black tabular-nums">{fmt(t[k])}</div>
-            <div className="text-[11px] font-medium uppercase opacity-90">{TEMP_ICON[k]} {k}</div>
-          </div>
-        ))}
-      </div>
-      <div className="flex h-3 overflow-hidden rounded-full">
-        <div className="bg-gradient-to-br from-rose-500 to-orange-500" style={{ width: `${(t.hot / total) * 100}%` }} />
-        <div className="bg-amber-400" style={{ width: `${(t.warm / total) * 100}%` }} />
-        <div className="bg-sky-400" style={{ width: `${(t.cold / total) * 100}%` }} />
-      </div>
-      <p className="mt-2 text-[11px] text-slate-400">🔥 meeting/high-intent/replied · 🌤 connected/opened · 🧊 attempts, no engagement. Reasons per account below.</p>
-    </div>
-  );
-}
-
-function ReachStack({ r }: { r: ReachByChannel }) {
-  const total = Math.max(1, r.total);
-  return (
-    <div className="mb-1 flex h-3 overflow-hidden rounded-full">
-      <div className="bg-blue-500" style={{ width: `${(r.call_only / total) * 100}%` }} title={`Call only: ${r.call_only}`} />
-      <div className="bg-emerald-500" style={{ width: `${(r.both / total) * 100}%` }} title={`Both: ${r.both}`} />
-      <div className="bg-indigo-400" style={{ width: `${(r.email_only / total) * 100}%` }} title={`Email only: ${r.email_only}`} />
-    </div>
-  );
-}
-
-function ReachCard({ m }: { m: PeriodMetrics }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Unique reach by activity</h3>
-      {(["contacts","companies"] as const).map((k) => {
-        const r = m[k];
+    <div className="flex flex-wrap gap-2">
+      {insights.map((i, idx) => {
+        const isMeeting = /meeting/i.test(i.text);
+        const isHot = /hot account/i.test(i.text);
+        const clickable = hasBreakdown && (isMeeting || isHot);
         return (
-          <div key={k} className="mb-4 last:mb-0">
-            <div className="mb-1 flex items-baseline justify-between"><span className="text-sm capitalize text-slate-600">{k}</span><span className="text-lg font-bold tabular-nums text-slate-800">{fmt(r.total)}</span></div>
-            <ReachStack r={r} />
-            <div className="flex gap-3 text-[11px] text-slate-500"><Legend color="bg-blue-500" label={`☎ ${fmt(r.via_call)}`} /><Legend color="bg-emerald-500" label={`both ${fmt(r.both)}`} /><Legend color="bg-indigo-400" label={`✉ ${fmt(r.via_email)}`} /></div>
-          </div>
+          <button
+            key={idx}
+            onClick={clickable ? (isMeeting ? onMeetings : onHot) : undefined}
+            disabled={!clickable}
+            className={cn("inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold transition", tone(i.level), clickable && "cursor-pointer ring-1 ring-inset ring-current/20 hover:brightness-95")}
+          >
+            {i.text}{clickable && <ExternalLink className="h-3 w-3 opacity-60" />}
+          </button>
         );
       })}
     </div>
   );
 }
 
+function KpiStrip({ m }: { m: PeriodMetrics }) {
+  const items: { l: string; v: string; sub?: string }[] = [
+    { l: "Calls", v: fmt(m.calls.total), sub: `${fmt(m.calls.connected)} connected` },
+    { l: "Emails", v: fmt(m.emails.sent), sub: "sent" },
+    { l: "Connect", v: pct(m.calls.connect_rate) },
+    { l: "Open", v: m.emails.sent ? pct(m.emails.open_rate) : "—" },
+    { l: "Reply", v: m.emails.sent ? pct(m.emails.reply_rate) : "—" },
+    { l: "Meetings", v: fmt(m.meetings_booked) },
+    { l: "DM reach", v: m.titled_contacts ? `${fmt(m.dm_contacts)}/${fmt(m.titled_contacts)}` : "—" },
+    { l: "Contacts/acct", v: m.avg_contacts_per_company.toFixed(1) },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+      {items.map((it) => (
+        <Surface key={it.l} className="px-3 py-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-subtle">{it.l}</div>
+          <div className="font-mono text-lg font-bold tabular-nums text-ink">{it.v}</div>
+          {it.sub && <div className="text-[10px] tabular-nums text-ink-subtle">{it.sub}</div>}
+        </Surface>
+      ))}
+    </div>
+  );
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return <span className="inline-flex items-center gap-1"><span className={cn("inline-block h-2 w-2 rounded-sm", color)} />{label}</span>;
+}
+
+function Donut({ pct: p, label }: { pct: number; label: string }) {
+  const deg = Math.round(p * 360);
+  return (
+    <div className="relative h-20 w-20 shrink-0">
+      <div className="h-20 w-20 rounded-full" style={{ background: `conic-gradient(var(--primary) ${deg}deg, var(--surface-muted) 0)` }} />
+      <div className="absolute inset-[7px] flex items-center justify-center rounded-full bg-surface"><span className="font-mono text-sm font-bold tabular-nums text-ink">{label}</span></div>
+    </div>
+  );
+}
+
+/* Coverage as tables (lifecycle + market segment). Group-vs-single / franchise section removed. */
+function CoverageTable({ title, rows }: { title: string; rows: { label: string; dim: CoverageDim; chip?: string }[] }) {
+  const shown = rows.filter((r) => r.dim.total > 0);
+  if (shown.length === 0) return null;
+  return (
+    <div>
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-subtle">{title}</div>
+      <div className="overflow-hidden rounded-lg border border-line">
+        <div className="grid grid-cols-[1.4fr_0.7fr_0.9fr] gap-2 border-b border-line bg-surface-muted px-2.5 py-1 text-[9px] font-semibold uppercase tracking-wide text-ink-subtle">
+          <span>Segment</span><span className="text-right">Accounts</span><span className="text-right">Tapped</span>
+        </div>
+        {shown.map(({ label, dim, chip }) => {
+          const p = dim.tapped / dim.total;
+          return (
+            <div key={label} className="grid grid-cols-[1.4fr_0.7fr_0.9fr] items-center gap-2 border-b border-line/60 px-2.5 py-1.5 text-xs last:border-0">
+              <span className="min-w-0 truncate">{chip ? <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", chip)}>{label}</span> : <span className="text-ink-muted">{label}</span>}</span>
+              <span className="text-right font-mono tabular-nums text-ink-muted">{fmt(dim.total)}</span>
+              <span className="flex items-center justify-end gap-2">
+                <Bar value={p} tone={p >= 0.5 ? "good" : "warm"} width="w-8" />
+                <span className="font-mono tabular-nums text-ink">{fmt(dim.tapped)} · {pct0(p)}</span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CoverageCard({ book }: { book: BookCoverage }) {
+  return (
+    <Surface className="p-4">
+      <SectionTitle right={book.units_total > 0 ? <span className="text-[11px] tabular-nums text-ink-subtle">{fmt(book.gds)} GDs · {fmt(book.singles)} singles · {fmt(book.rooftops_total)} rooftops</span> : undefined}>
+        Owned-book coverage (cumulative · GD level)
+      </SectionTitle>
+      {book.units_total === 0 ? <p className="mt-3 text-sm text-ink-subtle">No owned accounts for this rep.</p> : (
+        <div className="mt-3 space-y-4">
+          <div className="flex items-center gap-4">
+            <Donut pct={book.pct} label={pct0(book.pct)} />
+            <div className="text-sm text-ink-muted"><span className="font-mono text-xl font-bold text-ink">{fmt(book.units_tapped)}</span> of {fmt(book.units_total)} owned units tapped</div>
+          </div>
+          <CoverageTable title="By lifecycle stage" rows={STAGE_GROUPS.map((g) => ({ label: g, dim: book.by_stage[g], chip: STAGE_CHIP[g] }))} />
+          <CoverageTable title="By market segment" rows={MARKET_SEGMENTS.map((s) => ({ label: MARKET_SEGMENT_LABELS[s], dim: book.by_segment[s] }))} />
+        </div>
+      )}
+    </Surface>
+  );
+}
+
+function TempCard({ m, clickable, onPick }: { m: PeriodMetrics; clickable: boolean; onPick: (f: AcctFilter) => void }) {
+  const t = m.temp;
+  const total = Math.max(1, t.hot + t.warm + t.cold);
+  return (
+    <Surface className="p-4">
+      <SectionTitle>Account temperature (tapped)</SectionTitle>
+      <div className="mb-3 mt-3 grid grid-cols-3 gap-2">
+        {(["hot", "warm", "cold"] as const).map((k) => {
+          const meta = TEMP_META[k];
+          const Icon = meta.icon;
+          return (
+            <button
+              key={k}
+              onClick={clickable ? () => onPick(k) : undefined}
+              disabled={!clickable}
+              className={cn(
+                "rounded-xl border border-line px-3 py-2.5 text-center transition",
+                clickable ? "cursor-pointer hover:border-line-strong hover:bg-surface-muted" : "cursor-default",
+              )}
+            >
+              <div className={cn("font-mono text-2xl font-bold tabular-nums", TEMP_TEXT[k])}>{fmt(t[k])}</div>
+              <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] font-semibold uppercase text-ink-muted"><Icon className={cn("h-3 w-3", TEMP_TEXT[k])} />{meta.label}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex h-2.5 overflow-hidden rounded-full">
+        <div className="bg-hot" style={{ width: `${(t.hot / total) * 100}%` }} />
+        <div className="bg-warm" style={{ width: `${(t.warm / total) * 100}%` }} />
+        <div className="bg-cold" style={{ width: `${(t.cold / total) * 100}%` }} />
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-ink-subtle">
+        🔴 Hot = meeting / high-intent callback / reply · 🟡 Warm = referral / connect / open · 🔵 Cold = no connect / disqualified.
+        {clickable ? " Click a tile to see the accounts." : " Per-account detail for Today / Yesterday / This week."}
+      </p>
+    </Surface>
+  );
+}
+
+function ReachStack({ r }: { r: ReachByChannel }) {
+  const total = Math.max(1, r.total);
+  return (
+    <div className="mb-1 flex h-2.5 overflow-hidden rounded-full">
+      <div className="bg-primary" style={{ width: `${(r.call_only / total) * 100}%` }} title={`Call only: ${r.call_only}`} />
+      <div className="bg-good" style={{ width: `${(r.both / total) * 100}%` }} title={`Both: ${r.both}`} />
+      <div className="bg-cold" style={{ width: `${(r.email_only / total) * 100}%` }} title={`Email only: ${r.email_only}`} />
+    </div>
+  );
+}
+
+function ReachCard({ m }: { m: PeriodMetrics }) {
+  return (
+    <Surface className="p-4">
+      <SectionTitle>Unique reach by activity</SectionTitle>
+      <div className="mt-3">
+        {(["contacts", "companies"] as const).map((k) => {
+          const r = m[k];
+          return (
+            <div key={k} className="mb-4 last:mb-0">
+              <div className="mb-1 flex items-baseline justify-between"><span className="text-sm capitalize text-ink-muted">{k === "companies" ? "rooftops" : k}</span><span className="font-mono text-lg font-bold tabular-nums text-ink">{fmt(r.total)}</span></div>
+              <ReachStack r={r} />
+              <div className="flex gap-3 text-[11px] text-ink-subtle"><Legend color="bg-primary" label={`call ${fmt(r.via_call)}`} /><Legend color="bg-good" label={`both ${fmt(r.both)}`} /><Legend color="bg-cold" label={`email ${fmt(r.via_email)}`} /></div>
+            </div>
+          );
+        })}
+      </div>
+    </Surface>
+  );
+}
+
 function QualityCard({ m }: { m: PeriodMetrics }) {
   const subs = [["Conversations", m.quality.sub.conversations], ["Account depth", m.quality.sub.depth], ["Persistence", m.quality.sub.persistence], ["Channel mix", m.quality.sub.channel], ["Deliverability", m.quality.sub.deliverability]] as const;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between"><h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Quality breakdown</h3><GradeBadge grade={m.quality.grade} score={m.quality.score} big /></div>
-      <ul className="space-y-2">
-        {subs.map(([l, v]) => <li key={l} className="text-xs"><div className="flex justify-between text-slate-600"><span>{l}</span><span className="tabular-nums">{v}</span></div><div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${v}%` }} /></div></li>)}
+    <Surface className="p-4">
+      <SectionTitle right={<GradeBadge grade={m.quality.grade} score={m.quality.score} big />}>Quality breakdown</SectionTitle>
+      <ul className="mt-3 space-y-2">
+        {subs.map(([l, v]) => <li key={l} className="text-xs"><div className="flex justify-between text-ink-muted"><span>{l}</span><span className="font-mono tabular-nums">{v}</span></div><div className="mt-1"><Bar value={v / 100} tone="primary" width="w-full" /></div></li>)}
       </ul>
-    </div>
+    </Surface>
   );
 }
 
 function EmailCard({ m }: { m: PeriodMetrics }) {
   const e = m.emails;
-  const rows = [["Open rate", e.open_rate, e.opened, "bg-sky-500"], ["Reply rate", e.reply_rate, e.replied, "bg-emerald-500"], ["Click rate", e.click_rate, e.clicked, "bg-violet-500"]] as const;
+  const rows = [["Open rate", e.open_rate, e.opened, "cold" as const], ["Reply rate", e.reply_rate, e.replied, "good" as const], ["Click rate", e.click_rate, e.clicked, "primary" as const]] as const;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Email engagement</h3>
-      <div className="mb-3 text-xs text-slate-500">{fmt(e.sent)} sent · {fmt(e.bounced)} bounced ({pct(e.bounce_rate)})</div>
-      {e.sent === 0 ? <p className="text-sm text-slate-400">No emails this period.</p> : (
+    <Surface className="p-4">
+      <SectionTitle>Email engagement</SectionTitle>
+      <div className="mb-3 mt-1 text-xs text-ink-subtle">{fmt(e.sent)} sent · {fmt(e.bounced)} bounced ({pct(e.bounce_rate)})</div>
+      {e.sent === 0 ? <p className="text-sm text-ink-subtle">No emails this period.</p> : (
         <ul className="space-y-2">
-          {rows.map(([l, rate, n, color]) => <li key={l} className="text-xs"><div className="flex justify-between text-slate-600"><span>{l}</span><span className="tabular-nums">{pct(rate)} <span className="text-slate-400">({fmt(n)})</span></span></div><div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={`h-full ${color}`} style={{ width: pct0(rate) }} /></div></li>)}
+          {rows.map(([l, rate, n, tone]) => <li key={l} className="text-xs"><div className="flex justify-between text-ink-muted"><span>{l}</span><span className="font-mono tabular-nums">{pct(rate)} <span className="text-ink-subtle">({fmt(n)})</span></span></div><div className="mt-1"><Bar value={rate} tone={tone} width="w-full" /></div></li>)}
         </ul>
       )}
-    </div>
+    </Surface>
   );
 }
 
 function DailyChart({ daily, name }: { daily: DailyPoint[]; name: string }) {
+  const [hover, setHover] = useState<number | null>(null);
   if (!daily?.length) return null;
   const max = Math.max(1, ...daily.map((d) => d.calls + d.emails));
-  const H = 96;
+  const H = 132;
+  const tickEvery = Math.max(1, Math.ceil(daily.length / 8));
+
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between"><h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Daily activity — {name} (this month)</h3><div className="flex items-center gap-3 text-[11px] text-slate-500"><Legend color="bg-emerald-500" label="Connected" /><Legend color="bg-blue-400" label="Other calls" /><Legend color="bg-indigo-300" label="Emails" /></div></div>
-      <div className="flex items-end gap-[3px]" style={{ height: H }}>
-        {daily.map((d) => { const others = Math.max(0, d.calls - d.connected); const seg = (v: number) => Math.round((v / max) * H);
-          return <div key={d.date} title={`${d.date}\nCalls: ${d.calls} (connected ${d.connected})\nEmails: ${d.emails}`} className="flex flex-1 flex-col justify-end" style={{ minWidth: 4 }}><div className="bg-indigo-300" style={{ height: seg(d.emails) }} /><div className="bg-blue-400" style={{ height: seg(others) }} /><div className="rounded-t-sm bg-emerald-500" style={{ height: seg(d.connected) }} /></div>; })}
+    <Surface className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <SectionTitle>Daily activity — {name} (this month)</SectionTitle>
+        <div className="flex items-center gap-3 text-[11px] text-ink-subtle">
+          <Legend color="bg-good" label="Connected" /><Legend color="bg-primary" label="Other calls" /><Legend color="bg-cold" label="Emails" />
+        </div>
       </div>
-      <div className="mt-1 flex justify-between text-[10px] text-slate-400"><span>{daily[0]?.date.slice(5)}</span><span>{daily[Math.floor(daily.length / 2)]?.date.slice(5)}</span><span>{daily[daily.length - 1]?.date.slice(5)}</span></div>
-    </div>
+
+      <div className="relative mt-4" style={{ height: H }}>
+        {/* y gridlines */}
+        {[0, 0.5, 1].map((g) => (
+          <div key={g} className="absolute left-0 right-0 border-t border-dashed border-line" style={{ bottom: g * H }}>
+            <span className="absolute -top-2 left-0 font-mono text-[9px] tabular-nums text-ink-subtle">{Math.round(max * g)}</span>
+          </div>
+        ))}
+        <div className="absolute inset-0 flex items-end gap-[2px] pl-6">
+          {daily.map((d, i) => {
+            const others = Math.max(0, d.calls - d.connected);
+            const seg = (v: number) => Math.round((v / max) * H);
+            return (
+              <div
+                key={d.date}
+                onMouseEnter={() => setHover(i)}
+                onMouseLeave={() => setHover((h) => (h === i ? null : h))}
+                className={cn("group relative flex flex-1 flex-col justify-end transition-opacity", hover !== null && hover !== i && "opacity-40")}
+                style={{ minWidth: 3 }}
+              >
+                <div className="bg-cold" style={{ height: seg(d.emails) }} />
+                <div className="bg-primary" style={{ height: seg(others) }} />
+                <div className="rounded-t-sm bg-good" style={{ height: seg(d.connected) }} />
+              </div>
+            );
+          })}
+        </div>
+        {/* tooltip */}
+        {hover !== null && (() => {
+          const d = daily[hover];
+          const leftPct = ((hover + 0.5) / daily.length) * 100;
+          return (
+            <div className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[11px] shadow-pop" style={{ left: `calc(1.5rem + ${leftPct}% )` }}>
+              <div className="font-semibold text-ink">{d.date}</div>
+              <div className="mt-0.5 tabular-nums text-ink-muted"><span className="text-good">●</span> {fmt(d.connected)} connected · {fmt(Math.max(0, d.calls - d.connected))} other · <span className="text-cold">●</span> {fmt(d.emails)} email</div>
+            </div>
+          );
+        })()}
+      </div>
+
+      <div className="mt-1 flex gap-[2px] pl-6 text-[9px] text-ink-subtle">
+        {daily.map((d, i) => <span key={d.date} className="flex-1 text-center tabular-nums" style={{ minWidth: 3 }}>{i % tickEvery === 0 ? d.date.slice(5) : ""}</span>)}
+      </div>
+    </Surface>
   );
 }
 
@@ -474,77 +575,94 @@ function DispositionCard({ m }: { m: PeriodMetrics }) {
   const entries = Object.entries(m.calls.by_disposition);
   const max = Math.max(1, ...entries.map(([, c]) => c));
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Calls by outcome</h3>
-      <div className="mb-3 text-xs text-slate-500">{fmt(m.calls.connected)} connected · {fmt(m.calls.not_connected)} not · {pct(m.calls.connect_rate)}</div>
-      {entries.length === 0 ? <p className="text-sm text-slate-400">No calls this period.</p> : (
-        <ul className="space-y-1.5">{entries.map(([label, count]) => <li key={label} className="text-xs"><div className="flex items-center justify-between"><span className="truncate pr-2 text-slate-600">{label}</span><span className="tabular-nums text-slate-500">{fmt(count)}</span></div><div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={CONNECTED_LABELS.has(label) ? "h-full bg-emerald-500" : "h-full bg-rose-400"} style={{ width: `${(count / max) * 100}%` }} /></div></li>)}</ul>
+    <Surface className="p-4">
+      <SectionTitle right={<span className="text-[11px] tabular-nums text-ink-subtle">{fmt(m.calls.connected)} connected · {fmt(m.calls.not_connected)} not · {pct(m.calls.connect_rate)}</span>}>Calls by outcome</SectionTitle>
+      {entries.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">No calls this period.</p> : (
+        <ul className="mt-3 grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+          {entries.map(([label, count]) => (
+            <li key={label} className="text-xs">
+              <div className="flex items-center justify-between"><span className="truncate pr-2 text-ink-muted">{label}</span><span className="font-mono tabular-nums text-ink-subtle">{fmt(count)}</span></div>
+              <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-surface-muted"><div className={CONNECTED_LABELS.has(label) ? "h-full bg-good" : "h-full bg-ink-subtle/50"} style={{ width: `${(count / max) * 100}%` }} /></div>
+            </li>
+          ))}
+        </ul>
       )}
-    </div>
+    </Surface>
   );
 }
 
-function CompaniesCard({ m, period, book }: { m: PeriodMetrics; period: PeriodKey; book: BookCoverage }) {
-  const [openCo, setOpenCo] = useState<string | null>(null);
+/** Map an enriched period breakdown row to the shared RooftopNode shape. */
+function toNode(c: CompanyBreakdownRow): RooftopNode {
+  return {
+    id: c.id, name: c.name, calls: c.calls, emails: c.emails, connected: c.connected,
+    temp: c.temp, temp_reason: c.temp_reason, last_ms: c.last_ms, contacts: c.contacts_list ?? [],
+    tapped: true, stage: c.stage, disqualified: c.disqualified,
+  };
+}
+
+const ACCT_FILTERS: { key: AcctFilter; label: string }[] = [
+  { key: "all", label: "All" }, { key: "hot", label: "Hot" }, { key: "warm", label: "Warm" },
+  { key: "cold", label: "Cold" }, { key: "meetings", label: "Meetings" }, { key: "disqualified", label: "Disqualified" },
+];
+
+function CompaniesCard({ m, period, book, filter, setFilter }: {
+  m: PeriodMetrics; period: PeriodKey; book: BookCoverage; filter: AcctFilter; setFilter: (f: AcctFilter) => void;
+}) {
   const [showUntapped, setShowUntapped] = useState(false);
   const hasBreakdown = NARROW_PERIODS.includes(period);
   const breakdown = m.company_breakdown ?? [];
   const untapped = book.untapped_sample ?? [];
   const untappedCount = Math.max(0, book.units_total - book.units_tapped);
 
+  const filtered = useMemo(() => {
+    const rows = (m.company_breakdown ?? []).filter((c) => {
+      if (filter === "meetings") return c.meetings > 0;
+      if (filter === "disqualified") return c.disqualified;
+      if (filter === "all") return true;
+      return c.temp === filter;
+    });
+    return rows.map(toNode);
+  }, [m.company_breakdown, filter]);
+
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Accounts {showUntapped ? "untapped (cumulative)" : hasBreakdown ? `tapped this period (${breakdown.length})` : ""}</h3>
-        {untappedCount > 0 && <button onClick={() => setShowUntapped((s) => !s)} className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100">{showUntapped ? "Show tapped" : `Untapped (${fmt(untappedCount)})`}</button>}
+    <Surface className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <SectionTitle>Accounts {showUntapped ? "untapped (cumulative)" : `tapped this period${hasBreakdown ? ` (${breakdown.length})` : ""}`}</SectionTitle>
+        {untappedCount > 0 && (
+          <button onClick={() => setShowUntapped((s) => !s)} className="inline-flex items-center gap-1 rounded-lg bg-warn-weak px-2 py-0.5 text-xs font-semibold text-warn transition hover:brightness-95">
+            <AlertTriangle className="h-3 w-3" />{showUntapped ? "Show tapped" : `Untapped ${fmt(untappedCount)}`}
+          </button>
+        )}
       </div>
 
       {showUntapped ? (
-        untapped.length === 0 ? <p className="text-sm text-slate-400">Every owned account has been tapped. 🎉</p> : (
-          <div className="max-h-72 space-y-0.5 overflow-y-auto pr-1">
+        untapped.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">Every owned account has been tapped. 🎉</p> : (
+          <div className="mt-3 max-h-72 space-y-0.5 overflow-y-auto scroll-y pr-1">
             {untapped.map((c) => (
-              <a key={c.id} href={companyUrl(c.id)} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between rounded-lg px-2 py-1 text-sm text-slate-600 hover:bg-slate-50">
-                <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{c.name}</span>{c.stage && <span className={`shrink-0 rounded px-1 text-[9px] ${STAGE_CHIP[c.stage as StageGroup] ?? ""}`}>{c.stage}</span>}</span><span className="shrink-0 text-blue-600">↗</span>
+              <a key={c.id} href={companyUrl(c.id)} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-ink-muted transition hover:bg-surface-muted">
+                <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{c.name}</span>{c.stage && <span className={cn("shrink-0 rounded px-1 text-[9px]", STAGE_CHIP[c.stage as StageGroup] ?? "")}>{c.stage}</span>}</span>
+                <ExternalLink className="h-3.5 w-3.5 shrink-0 text-primary" />
               </a>
             ))}
-            {untappedCount > untapped.length && <p className="px-2 py-1 text-xs text-slate-400">+ {fmt(untappedCount - untapped.length)} more untapped</p>}
+            {untappedCount > untapped.length && <p className="px-2 py-1 text-xs text-ink-subtle">+ {fmt(untappedCount - untapped.length)} more untapped</p>}
           </div>
         )
-      ) : !hasBreakdown ? <p className="text-sm text-slate-400">Per-account detail for Today / Yesterday / This week.</p>
-      : breakdown.length === 0 ? <p className="text-sm text-slate-400">No accounts tapped this period.</p> : (
-        <div className="max-h-80 space-y-1 overflow-y-auto pr-1">
-          {breakdown.map((c) => {
-            const open = openCo === c.id; const contacts = c.contacts_list ?? [];
-            return (
-              <div key={c.id} className="rounded-xl border border-slate-100">
-                <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-sm">
-                  <button onClick={() => setOpenCo(open ? null : c.id)} className="flex min-w-0 items-center gap-1.5 text-left" disabled={contacts.length === 0}>
-                    {contacts.length > 0 && <span className="text-slate-400">{open ? "▾" : "▸"}</span>}
-                    <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${TEMP_CHIP[c.temp]}`} title={c.temp_reason}>{TEMP_ICON[c.temp]}</span>
-                    <span className="truncate text-slate-700">{c.name}</span>
-                    {c.stage && <span className={`shrink-0 rounded px-1 text-[9px] ${STAGE_CHIP[c.stage as StageGroup] ?? ""}`}>{c.stage}</span>}
-                  </button>
-                  <a href={companyUrl(c.id)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-600 hover:bg-blue-100">↗</a>
-                </div>
-                <div className="px-2 pb-1.5 text-[11px] text-slate-500">
-                  <span className="italic text-slate-400">{c.temp_reason}</span>
-                  <span className="ml-2 tabular-nums">{fmt(c.contacts)}c · {fmt(c.calls)}☎ · {fmt(c.emails)}✉{c.opened > 0 ? ` · ${fmt(c.opened)} opened` : ""}{c.replied > 0 ? ` · ${fmt(c.replied)} replied` : ""}</span>
-                </div>
-                {open && contacts.length > 0 && (
-                  <ul className="border-t border-slate-100 px-2 py-1.5 text-xs">
-                    {contacts.map((ct) => (
-                      <li key={ct.id} className="flex items-center justify-between gap-2 py-0.5">
-                        <span className="flex min-w-0 items-center gap-1.5"><span className="truncate text-slate-600">{ct.name}</span>{ct.dm && <span className="shrink-0 rounded bg-fuchsia-100 px-1 text-[9px] font-bold text-fuchsia-700">DM</span>}{ct.title && <span className="hidden truncate text-[10px] text-slate-400 sm:inline">{ct.title}</span>}</span>
-                        <a href={contactUrl(ct.id)} target="_blank" rel="noopener noreferrer" className="shrink-0 text-blue-600 hover:underline">↗</a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      ) : !hasBreakdown ? <p className="mt-3 text-sm text-ink-subtle">Per-account detail for Today / Yesterday / This week.</p>
+      : (
+        <>
+          <div className="mb-3 mt-3 flex flex-wrap gap-1">
+            {ACCT_FILTERS.map((f) => (
+              <button key={f.key} onClick={() => setFilter(f.key)}
+                className={cn("rounded-lg px-2.5 py-1 text-xs font-semibold transition", filter === f.key ? "bg-ink text-white" : "bg-surface-muted text-ink-muted hover:text-ink")}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="max-h-96 overflow-y-auto scroll-y">
+            <RooftopsTable rows={filtered} />
+          </div>
+        </>
       )}
-    </div>
+    </Surface>
   );
 }
