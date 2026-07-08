@@ -30,6 +30,7 @@ import {
   Insight,
   MARKET_SEGMENTS,
   MarketSegment,
+  MonthMetrics,
   NamedRef,
   PERIOD_KEYS,
   NARROW_PERIODS,
@@ -136,6 +137,32 @@ function toSignals(s: SigAcc, tapped?: boolean): TempSignals {
 
 const classify = (s: SigAcc, tapped?: boolean) => classifyTemperature(toSignals(s, tapped));
 const highIntentCount = (s: SigAcc) => s.meetingScheduled + s.meetingRescheduled + s.callbackHigh;
+
+// ── Monthly (US/Eastern) new-unique tracking ───────────────────────────────────────
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const etMonthKey = (ms: number): string => etDateStr(ms).slice(0, 7); // YYYY-MM
+
+/** The last 3 US/Eastern calendar months (incl. the current one), newest first. */
+function recentMonths(todayEt: string): { key: string; label: string }[] {
+  const [y, m] = todayEt.split("-").map(Number); // m is 1-12
+  const out: { key: string; label: string }[] = [];
+  for (let i = 0; i < 3; i++) {
+    let yy = y, mm = m - i;
+    while (mm <= 0) { mm += 12; yy -= 1; }
+    out.push({ key: `${yy}-${String(mm).padStart(2, "0")}`, label: `${MONTH_LABELS[mm - 1]} ${yy}` });
+  }
+  return out;
+}
+
+interface MonthAcc {
+  companies: Set<string>;
+  units: Set<string>; // "gd:*" / "single:*" — distinct owned units touched this month
+  contacts: Set<string>;
+  calls: number;
+  emails: number;
+  connected: number;
+}
+const newMonthAcc = (): MonthAcc => ({ companies: new Set(), units: new Set(), contacts: new Set(), calls: 0, emails: 0, connected: 0 });
 
 /** Per-contact accumulator: same signals, used to give each contact its own temperature. */
 type ContactAcc = SigAcc;
@@ -568,8 +595,25 @@ export function aggregate(
   // its engagement rolls up to the OWNER's book) whenever ANY tracked rep works it — not only
   // when the owner does it themselves. Fixes owner≠activity-doer accounts reading as untouched.
   const companyOwner = new Map<string, string>();
+  const companyUnit = new Map<string, string>(); // owned company -> its GD/Single unit key
   for (const ownerId of REP_OWNER_IDS) {
-    for (const c of ownedCompanies[ownerId] ?? []) companyOwner.set(c.id, ownerId);
+    for (const c of ownedCompanies[ownerId] ?? []) {
+      companyOwner.set(c.id, ownerId);
+      companyUnit.set(c.id, c.isGroup && c.gdId ? `gd:${c.gdId}` : `single:${c.id}`);
+    }
+  }
+
+  // Monthly new-unique accumulators (owned-book scoped). firstTap* span ALL history so we can
+  // tell whether an account/contact engaged in a recent month was EVER worked before it.
+  const recent = recentMonths(ctx.windowEndDate);
+  const recentSet = new Set(recent.map((r) => r.key));
+  const firstTapCo = new Map<string, Map<string, number>>();
+  const firstTapCt = new Map<string, Map<string, number>>();
+  const monthAgg = new Map<string, Map<string, MonthAcc>>();
+  for (const ownerId of REP_OWNER_IDS) {
+    firstTapCo.set(ownerId, new Map());
+    firstTapCt.set(ownerId, new Map());
+    monthAgg.set(ownerId, new Map());
   }
 
   // totals reflect the short (display) window; everTapped uses the full anchored set.
@@ -606,6 +650,23 @@ export function aggregate(
         racc.contacts.set(cid, ct);
       }
       roofMap.set(co, racc);
+
+      // Monthly new-unique: first-tap over all history + per-recent-month engagement.
+      const fco = firstTapCo.get(owner)!;
+      fco.set(co, Math.min(fco.get(co) ?? a.timestampMs, a.timestampMs));
+      const fct = firstTapCt.get(owner)!;
+      for (const cid of a.contactIds) fct.set(cid, Math.min(fct.get(cid) ?? a.timestampMs, a.timestampMs));
+      const mk = etMonthKey(a.timestampMs);
+      if (recentSet.has(mk)) {
+        const ma = monthAgg.get(owner)!;
+        const acc = ma.get(mk) ?? newMonthAcc();
+        acc.companies.add(co);
+        const uk = companyUnit.get(co);
+        if (uk) acc.units.add(uk);
+        for (const cid of a.contactIds) acc.contacts.add(cid);
+        if (a.type === "call") { acc.calls++; if (a.disposition && isConnected(a.disposition)) acc.connected++; } else acc.emails++;
+        ma.set(mk, acc);
+      }
     }
   }
 
@@ -630,7 +691,26 @@ export function aggregate(
     });
 
     const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta);
-    reps[ownerId] = { periods, daily, book };
+
+    const ma = monthAgg.get(ownerId)!;
+    const fco = firstTapCo.get(ownerId)!;
+    const fct = firstTapCt.get(ownerId)!;
+    const monthly: MonthMetrics[] = recent.map(({ key, label }) => {
+      const acc = ma.get(key) ?? newMonthAcc();
+      let rooftops_new = 0, gds = 0, singles = 0, contacts_new = 0;
+      for (const co of acc.companies) if (etMonthKey(fco.get(co)!) === key) rooftops_new++;
+      for (const uk of acc.units) { if (uk.startsWith("gd:")) gds++; else singles++; }
+      for (const cid of acc.contacts) if (etMonthKey(fct.get(cid)!) === key) contacts_new++;
+      return {
+        month: key, label,
+        rooftops_engaged: acc.companies.size, rooftops_new,
+        gds_engaged: gds, singles_engaged: singles,
+        contacts_engaged: acc.contacts.size, contacts_new,
+        calls: acc.calls, emails: acc.emails, connected: acc.connected,
+      };
+    });
+
+    reps[ownerId] = { periods, daily, book, monthly };
   }
 
   return {

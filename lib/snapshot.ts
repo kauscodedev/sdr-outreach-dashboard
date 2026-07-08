@@ -60,7 +60,7 @@ export function emptySnapshot(): Snapshot {
   for (const id of REP_OWNER_IDS) {
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
     for (const p of PERIOD_KEYS) periods[p] = emptyMetrics();
-    reps[id] = { periods, daily: [], book: emptyBook() };
+    reps[id] = { periods, daily: [], book: emptyBook(), monthly: [] };
   }
   return {
     generated_at_utc: "",
