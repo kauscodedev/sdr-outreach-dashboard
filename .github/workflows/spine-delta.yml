@@ -5,7 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency: spine-sync
+concurrency:
+  group: spine-delta
+  cancel-in-progress: false
 jobs:
   delta:
     runs-on: ubuntu-latest

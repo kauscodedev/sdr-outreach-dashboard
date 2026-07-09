@@ -5,7 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency: spine-sync
+concurrency:
+  group: spine-reconcile
+  cancel-in-progress: false
 jobs:
   reconcile:
     runs-on: ubuntu-latest

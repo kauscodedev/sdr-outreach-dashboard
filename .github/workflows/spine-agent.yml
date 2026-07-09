@@ -5,7 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency: spine-agent
+concurrency:
+  group: spine-agent
+  cancel-in-progress: false
 jobs:
   agent:
     runs-on: ubuntu-latest
