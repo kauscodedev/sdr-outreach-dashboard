@@ -49,55 +49,77 @@ async function triggerOwnerPull(ownerId: string): Promise<string> {
 
 // ── Roster (users) ──────────────────────────────────────────────────────────
 
-/** Add or update a tracked user. Resolves the email → HubSpot owner id via sdr_owners (no live
- *  HubSpot call), upserts sdr_roster, sets the access role, and kicks a targeted history pull. */
-export async function addUser(formData: FormData) {
-  await requireAdmin();
-  const first = str(formData, "first_name");
-  const last = str(formData, "last_name");
-  const email = str(formData, "email").toLowerCase();
-  const role = str(formData, "role") || "user";            // user | manager | admin  (ACCESS level)
-  const kind = str(formData, "kind") || "sdr";             // sdr | ae | access  (rep TYPE — independent of role)
-  const managerKey = str(formData, "manager_key") || null; // SDR team (manager/TL)
-  const aePod = str(formData, "ae_pod") || null;           // AE pod
-  if (!email.endsWith("@spyne.ai")) throw new Error("spyne.ai emails only");
-  if (!["user", "manager", "admin"].includes(role)) throw new Error("bad role");
-  if (!["sdr", "ae", "access"].includes(kind)) throw new Error("bad type");
+/** Result surfaced to the admin UI after an add/update — read back from the DB, not optimistic. */
+type UserResult = { ok: boolean; message: string };
 
-  const c = sb();
+/** Add or update a user (React `useFormState` action → returns a DB-verified result banner).
+ *  Resolves the email → HubSpot owner id via sdr_owners (no live HubSpot call), upserts sdr_roster,
+ *  sets the access role, kicks a targeted history pull, then RE-READS the row and reports what the
+ *  database actually holds. Never throws — errors come back as `{ ok: false, message }`. */
+export async function addUser(_prev: UserResult | null, formData: FormData): Promise<UserResult> {
+  try {
+    await requireAdmin();
+    const first = str(formData, "first_name");
+    const last = str(formData, "last_name");
+    const email = str(formData, "email").toLowerCase();
+    const role = str(formData, "role") || "user";            // user | manager | admin  (ACCESS level)
+    const kind = str(formData, "kind") || "sdr";             // sdr | ae | access  (rep TYPE — independent of role)
+    const managerKey = str(formData, "manager_key") || null; // SDR team (manager/TL)
+    const aePod = str(formData, "ae_pod") || null;           // AE pod
+    if (!email || !email.endsWith("@spyne.ai")) return { ok: false, message: "Email must be a @spyne.ai address." };
+    if (!["user", "manager", "admin"].includes(role)) return { ok: false, message: "Invalid role." };
+    if (!["sdr", "ae", "access"].includes(kind)) return { ok: false, message: "Invalid type." };
 
-  // Access role → sdr_roles (set first so it works even for access-only / non-HubSpot users).
-  // manager carries a (vestigial) team_id to satisfy the legacy check constraint.
-  if (role === "admin") await c.from("sdr_roles").upsert({ email, role: "admin", team_id: null }, { onConflict: "email" });
-  else if (role === "manager") await c.from("sdr_roles").upsert({ email, role: "manager", team_id: aePod || managerKey || "team" }, { onConflict: "email" });
-  else await c.from("sdr_roles").delete().eq("email", email);
+    const c = sb();
 
-  // "access" = an admin/viewer who is NOT a tracked rep (no book). Never put them in the roster;
-  // remove any prior roster row (fixes people mistakenly added as a rep). Then we're done.
-  if (kind === "access") {
-    await c.from("sdr_roster").delete().eq("email", email);
+    // Access role → sdr_roles (set first so it works even for access-only / non-HubSpot users).
+    // manager carries a (vestigial) team_id to satisfy the legacy check constraint.
+    if (role === "admin") await c.from("sdr_roles").upsert({ email, role: "admin", team_id: null }, { onConflict: "email" });
+    else if (role === "manager") await c.from("sdr_roles").upsert({ email, role: "manager", team_id: aePod || managerKey || "team" }, { onConflict: "email" });
+    else await c.from("sdr_roles").delete().eq("email", email);
+
+    // "access" = an admin/viewer who is NOT a tracked rep (no book). Never put them in the roster;
+    // remove any prior roster row (fixes people mistakenly added as a rep). Admins need no team.
+    if (kind === "access") {
+      await c.from("sdr_roster").delete().eq("email", email);
+      invalidateTeamCache();
+      revalidatePath("/admin");
+      const { data: roleRow } = await c.from("sdr_roles").select("role").eq("email", email).maybeSingle();
+      const { data: stillRep } = await c.from("sdr_roster").select("owner_id").eq("email", email).maybeSingle();
+      if (stillRep) return { ok: false, message: `Could not remove ${email} from the tracked roster — please retry.` };
+      return { ok: true, message: `✓ ${email} saved as access-only — DB confirms role='${roleRow?.role ?? "user"}', no roster row (not a tracked rep, no team needed).` };
+    }
+
+    // Tracked rep (SDR or AE): resolve the email → real HubSpot owner id (no live HubSpot call).
+    const { data: owner } = await c.from("sdr_owners").select("owner_id,email,name").eq("email", email).maybeSingle();
+    if (!owner) {
+      return { ok: false, message: `No HubSpot user found for ${email}. Check the email, or run a reconcile to refresh the owner list, then retry.` };
+    }
+    const existed = (await c.from("sdr_roster").select("owner_id").eq("owner_id", owner.owner_id).maybeSingle()).data != null;
+    const name = [first, last].filter(Boolean).join(" ") || owner.name || email;
+    const { error } = await c.from("sdr_roster").upsert({
+      owner_id: owner.owner_id, email, first_name: first || null, last_name: last || null,
+      name, kind, ae_pod: aePod, manager_key: kind === "sdr" ? managerKey : null, // AEs don't report to an SDR manager
+      active: true, updated_at: new Date().toISOString(),
+    }, { onConflict: "owner_id" });
+    if (error) return { ok: false, message: `Database write failed: ${error.message}` };
+
     invalidateTeamCache();
+    const pull = await triggerOwnerPull(owner.owner_id);
     revalidatePath("/admin");
-    return;
-  }
 
-  // Tracked rep (SDR or AE): resolve the email → real HubSpot owner id (no live HubSpot call).
-  const { data: owner } = await c.from("sdr_owners").select("owner_id,email,name").eq("email", email).maybeSingle();
-  if (!owner) {
-    throw new Error(`No HubSpot user found for ${email}. Confirm the email, or they may be new in ` +
-      `HubSpot — run a reconcile to refresh the owner list, then try again.`);
+    // Verify the write actually landed by re-reading it back from the DB.
+    const { data: row } = await c.from("sdr_roster")
+      .select("name,kind,ae_pod,manager_key,active").eq("owner_id", owner.owner_id).maybeSingle();
+    if (!row || !row.active) return { ok: false, message: `Write did not persist for ${email} — please retry.` };
+    const parts = [`type ${row.kind.toUpperCase()}`];
+    if (row.ae_pod) parts.push(`pod ${row.ae_pod}`);
+    if (row.manager_key) parts.push(`mgr ${row.manager_key}`);
+    if (role !== "user") parts.push(`role ${role}`);
+    return { ok: true, message: `✓ ${row.name} ${existed ? "updated" : "added"} — verified in DB (${parts.join(" · ")}). History pull: ${pull}.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
   }
-  const name = [first, last].filter(Boolean).join(" ") || owner.name || email;
-  const { error } = await c.from("sdr_roster").upsert({
-    owner_id: owner.owner_id, email, first_name: first || null, last_name: last || null,
-    name, kind, ae_pod: aePod, manager_key: kind === "sdr" ? managerKey : null, // AEs don't report to an SDR manager
-    active: true, updated_at: new Date().toISOString(),
-  }, { onConflict: "owner_id" });
-  if (error) throw new Error(error.message);
-
-  invalidateTeamCache();
-  await triggerOwnerPull(owner.owner_id);
-  revalidatePath("/admin");
 }
 
 /** Soft-delete: drop a user from the pull filter + dashboard, keep historical spine data. */
