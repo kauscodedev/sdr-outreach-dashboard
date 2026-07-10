@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { decideScope } from "../lib/access/scope";
 import { REP_OWNER_IDS } from "../config/reps";
-import { sdrOwnersInPod, sdrOwnersUnderManager } from "../config/team-structure";
+import { allOwnersInPod, sdrOwnersUnderManager } from "../config/team-structure";
 
 const ALL = [...REP_OWNER_IDS];
 
@@ -18,12 +18,13 @@ describe("decideScope", () => {
     expect(decideScope("l@spyne.ai", { role: "leadership", team_id: null }, null, ALL).isAdmin).toBe(true);
   });
 
-  it("AE pod lead (by email) → the pod's tracked SDRs", () => {
+  it("AE pod lead (by email) → the pod's SDRs + AEs", () => {
     const v = decideScope(AE_SAARTHAK, { role: "manager", team_id: "T" }, null, ALL);
-    const expected = sdrOwnersInPod("saarthak").filter((id) => ALL.includes(id));
+    const expected = allOwnersInPod("saarthak").filter((id) => ALL.includes(id));
     expect(v.role).toBe("manager");
     expect(new Set(v.defaultOwnerIds)).toEqual(new Set(expected));
-    expect(v.defaultOwnerIds.length).toBeGreaterThan(1);
+    expect(v.defaultOwnerIds).toContain("163855147"); // Gagandeep — SDR in the Saarthak pod
+    expect(v.defaultOwnerIds).toContain("127226246901"); // Jaiaditya Berry — AE in the Saarthak pod
   });
 
   it("player-coach manager (by owner id) → their team incl. self", () => {
