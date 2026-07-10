@@ -1,4 +1,5 @@
 /** All sdr_* Postgres I/O. Server-only (service role). Batched, idempotent upserts. */
+import { gzipSync, gunzipSync } from "node:zlib";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "../supabase/admin";
 import { Snapshot } from "../sync/types";
@@ -169,18 +170,34 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies };
 }
 
+/** Snapshots are stored gzip-compressed (base64 inside the jsonb column). Uncompressed they are
+ *  large (~9 MB at 40+ reps) and the single-row write tripped Postgres statement_timeout; gzip
+ *  cuts that ~7× (to ~1 MB), so the write is small and fast, and it scales as the roster grows.
+ *  Wrapper shape: { __gz: "<base64>", v: 1 }. Rows written before this (raw jsonb) still load. */
+function packSnapshot(snap: Snapshot): { __gz: string; v: number } {
+  const gz = gzipSync(Buffer.from(JSON.stringify(snap), "utf8"), { level: 6 });
+  return { __gz: gz.toString("base64"), v: 1 };
+}
+
+function unpackSnapshot(data: unknown): Snapshot | null {
+  if (!data) return null;
+  if (typeof data === "object" && data !== null && "__gz" in (data as Record<string, unknown>)) {
+    const b64 = (data as { __gz: string }).__gz;
+    return JSON.parse(gunzipSync(Buffer.from(b64, "base64")).toString("utf8")) as Snapshot;
+  }
+  return data as Snapshot; // legacy: raw uncompressed jsonb row
+}
+
 export async function saveSnapshot(snap: Snapshot) {
-  const data = snap as unknown as object;
-  // Prefer the RPC, which raises statement_timeout for the large (~6 MB) jsonb write (the plain
-  // upsert intermittently trips the default per-request timeout from CI). Fall back to a direct
-  // upsert if the function is not deployed yet — so this is safe before the schema is applied.
+  const data = packSnapshot(snap) as unknown as object;
+  const mb = (Buffer.byteLength((data as { __gz: string }).__gz) / 1_048_576).toFixed(2);
+  console.log(`[spine] snapshot compressed to ${mb} MB (base64) for write`);
+  // Prefer the RPC (raises statement_timeout via SET LOCAL); on ANY error fall back to a retrying
+  // plain upsert. The compressed payload is small, so a timeout should no longer occur — the retry
+  // path is belt-and-suspenders. A failed write leaves the last good row intact.
   const { error: rpcErr } = await sb().rpc("sdr_save_snapshot", { p_data: data });
   if (!rpcErr) return;
-  if (!/could not find the function|does not exist|schema cache/i.test(rpcErr.message)) {
-    throw new Error(`[spine] saveSnapshot (rpc): ${rpcErr.message}`);
-  }
-  // Fallback (until sdr_save_snapshot is applied): the ~6 MB jsonb write intermittently trips the
-  // default statement timeout, so retry with backoff. A failed write leaves the last good row intact.
+  console.warn(`[spine] saveSnapshot rpc failed (${rpcErr.message}) — falling back to retrying upsert`);
   let lastErr = "";
   for (let attempt = 1; attempt <= 4; attempt++) {
     const { error } = await sb().from("sdr_snapshots")
@@ -195,5 +212,5 @@ export async function saveSnapshot(snap: Snapshot) {
 export async function loadSnapshotRow(): Promise<Snapshot | null> {
   const { data, error } = await sb().from("sdr_snapshots").select("data").eq("id", 1).maybeSingle();
   if (error) throw new Error(`[spine] loadSnapshot: ${error.message}`);
-  return (data?.data as Snapshot) ?? null;
+  return unpackSnapshot(data?.data ?? null);
 }
