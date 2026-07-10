@@ -3,7 +3,8 @@ import { supabaseServer } from "../../lib/supabase/server";
 import { supabaseAdmin } from "../../lib/supabase/admin";
 import { resolveViewer } from "../../lib/access/resolve";
 import { loadTeamStructure } from "../../lib/team/load";
-import { addUser, setUserActive, savePod, removePod, saveManager, removeManager, addRole, removeRole } from "./actions";
+import { setUserActive, savePod, removePod, saveManager, removeManager, addRole, removeRole } from "./actions";
+import { AddUserForm } from "../../components/admin/AddUserForm";
 
 export const dynamic = "force-dynamic";
 
@@ -55,33 +56,7 @@ export default async function AdminPage() {
           rep with a book, independent of role — choose <em>Access only</em> for admins/managers who aren’t SDRs/AEs. SDR/AE
           types are matched to a HubSpot user (so the owner id is always correct) and get a targeted history pull automatically.
         </p>
-        <form action={addUser} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <input name="first_name" placeholder="First name" className={inputCls} />
-          <input name="last_name" placeholder="Last name" className={inputCls} />
-          <input name="email" required placeholder="name@spyne.ai" className={inputCls} />
-          <select name="role" className={inputCls} defaultValue="user" aria-label="Access role">
-            <option value="user">Role: User</option>
-            <option value="manager">Role: Manager</option>
-            <option value="admin">Role: Admin</option>
-          </select>
-          <select name="kind" className={inputCls} defaultValue="sdr" aria-label="Type">
-            <option value="sdr">Type: SDR (tracked rep)</option>
-            <option value="ae">Type: AE (tracked rep)</option>
-            <option value="access">Type: Access only (not a rep)</option>
-          </select>
-          <div className="hidden lg:block" />
-          <select name="manager_key" className={inputCls} defaultValue="" aria-label="SDR team">
-            <option value="">SDR team — None</option>
-            {Object.values(ts.managers).map((m) => (
-              <option key={m.key} value={m.key}>{m.name}{m.parent ? ` (TL → ${mgrName.get(m.parent) ?? m.parent})` : ""}</option>
-            ))}
-          </select>
-          <select name="ae_pod" className={inputCls} defaultValue="" aria-label="AE pod">
-            <option value="">AE pod — None</option>
-            {ts.pods.map((p) => <option key={p.key} value={p.key}>{p.name}{p.leadEmail ? ` (${p.leadEmail})` : ""}</option>)}
-          </select>
-          <div className="sm:col-span-2 lg:col-span-3"><button className={btnCls}>Add / update user</button></div>
-        </form>
+        <AddUserForm managers={Object.values(ts.managers)} pods={ts.pods} />
       </section>
 
       {/* ── Roster ────────────────────────────────────────────────────── */}
