@@ -19,13 +19,16 @@ export interface ActivityRow {
 export interface CompanyRow {
   hs_id: string;
   name: string | null;
-  gd_stage: string | null;
+  gd_stage: string | null; // lifecycle_stage_gd_level (GD-level)
+  lifecycle_stage: string | null; // lifecyclestage (company-level)
   owner_id: string | null;
   gd_id: string | null;
   is_group: boolean;
   group_name: string | null;
   segment: string | null;
   dealership_type: string | null;
+  last_activity_ms: number | null; // notes_last_updated
+  rooftop_last_activity_ms: number | null; // rooftop_last_activity
   hs_lastmodified_ms: number | null;
 }
 
@@ -34,6 +37,24 @@ export interface ContactRow {
   name: string | null;
   title: string | null;
   dm: boolean;
+}
+
+export interface DealRow {
+  hs_id: string;
+  pipeline: string | null;
+  dealstage: string | null; // raw HubSpot stage id
+  stage_key: string; // denormalized canonical DealStageKey (for SQL filtering/indexing)
+  deal_owner_id: string | null; // hubspot_owner_id (AE)
+  sdr_owner_id: string | null; // sdr_owner (SDR)
+  company_id: string | null; // primary associated company
+  contact_ids: string[];
+  amount: number | null;
+  demo_scheduled_for_ms: number | null;
+  discovery_done_ms: number | null;
+  demo_done_ms: number | null;
+  is_closed_won: boolean; // derived at write time from stage_key (query convenience)
+  is_closed_lost: boolean;
+  hs_lastmodified_ms: number | null;
 }
 
 export interface OwnerRow { owner_id: string; email: string | null; name: string; active: boolean; }

@@ -11,8 +11,9 @@
  */
 
 import { hubspotPost, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
-import { Activity } from "./types";
-import { RawActivity } from "./pull";
+import { Activity, Deal } from "./types";
+import { RawActivity, RawDeal } from "./pull";
+import { stageKey } from "../../config/deal-stages";
 
 const ASSOC_BATCH = 1000; // v4 batch read input limit
 const OBJ_BATCH = 100; // v3 objects batch read input limit
@@ -158,6 +159,33 @@ export interface ResolveResult {
   companyNames: Record<string, string>;
   companyGdStage: Record<string, string | null>;
   contactMeta: Record<string, ContactMeta>;
+}
+
+/**
+ * Enrich raw deals with their primary company + associated contacts, and compute the canonical
+ * stage. Mirrors the activity flow (pull returns raw → this resolves associations) so pull.ts
+ * never imports this module — no import cycle. One primary company per deal; contacts are 1-to-many.
+ */
+export async function resolveDealAssociations(raw: RawDeal[]): Promise<(Deal & { lastModifiedMs: number })[]> {
+  const ids = raw.map((d) => d.id);
+  console.log(`Resolving deal associations for ${ids.length} deals…`);
+  const dealCompany = await batchReadAssociations("deals", "companies", ids);
+  const dealContacts = await batchReadAssociations("deals", "contacts", ids);
+  return raw.map((d) => ({
+    id: d.id,
+    pipeline: d.pipeline,
+    dealstage: d.dealstage,
+    stageKey: stageKey(d.pipeline, d.dealstage),
+    dealOwnerId: d.dealOwnerId,
+    sdrOwnerId: d.sdrOwnerId,
+    companyId: pickPrimaryCompany(dealCompany.get(d.id)),
+    contactIds: (dealContacts.get(d.id) ?? []).map((t) => t.toId),
+    amount: d.amount,
+    demoScheduledForMs: d.demoScheduledForMs,
+    discoveryDoneMs: d.discoveryDoneMs,
+    demoDoneMs: d.demoDoneMs,
+    lastModifiedMs: d.lastModifiedMs,
+  }));
 }
 
 export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveResult> {

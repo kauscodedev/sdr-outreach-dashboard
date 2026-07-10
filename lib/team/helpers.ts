@@ -53,3 +53,10 @@ export function nameMap(ts: TeamStructure): Record<string, string> {
   for (const m of ts.members) out[m.ownerId] = m.name;
   return out;
 }
+
+/** owner id → kind (sdr/ae) — drives the SDR/AE toggle on the dashboard. */
+export function kindMap(ts: TeamStructure): Record<string, "sdr" | "ae"> {
+  const out: Record<string, "sdr" | "ae"> = {};
+  for (const m of ts.members) out[m.ownerId] = m.kind === "ae" ? "ae" : "sdr";
+  return out;
+}

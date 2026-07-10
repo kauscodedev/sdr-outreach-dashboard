@@ -38,6 +38,15 @@ create table if not exists sdr_companies (
 );
 create index if not exists idx_sdr_co_owner on sdr_companies(owner_id);
 
+-- V2: company-level lifecycle stage + last-activity timestamps. Added via ALTER so existing
+-- installs pick them up (the CREATE above only fires on a fresh database).
+--   lifecycle_stage          = HubSpot `lifecyclestage` (company-level; gd_stage holds the GD-level one)
+--   last_activity_ms         = HubSpot `notes_last_updated` (Last Activity Date, any activity type)
+--   rooftop_last_activity_ms = HubSpot `rooftop_last_activity` (GD/rooftop-level last activity)
+alter table sdr_companies add column if not exists lifecycle_stage text;
+alter table sdr_companies add column if not exists last_activity_ms bigint;
+alter table sdr_companies add column if not exists rooftop_last_activity_ms bigint;
+
 create table if not exists sdr_contacts (
   hs_id      text primary key,
   name       text,
@@ -45,6 +54,32 @@ create table if not exists sdr_contacts (
   dm         boolean not null default false,
   updated_at timestamptz not null default now()
 );
+
+-- V2: deals (Auto Pipeline only; scoped to tracked owners on pull). One primary company per deal.
+-- stage_key is the canonical (pipeline, dealstage) normalization (config/deal-stages.ts); the raw
+-- dealstage id is kept alongside because the same id-space is reused across pipelines.
+create table if not exists sdr_deals (
+  hs_id                 text primary key,
+  pipeline              text,
+  dealstage             text,             -- raw HubSpot stage id
+  stage_key             text,             -- canonical DealStageKey (denormalized for filtering)
+  deal_owner_id         text,             -- hubspot_owner_id (the AE)
+  sdr_owner_id          text,             -- sdr_owner (the SDR)
+  company_id            text,             -- primary associated company
+  contact_ids           jsonb not null default '[]',
+  amount                numeric,
+  demo_scheduled_for_ms bigint,           -- demo_scheduled_for_date (the meeting date)
+  discovery_done_ms     bigint,           -- discovery_call_done_stage_date
+  demo_done_ms          bigint,           -- demo_done_stage_date
+  is_closed_won         boolean not null default false,
+  is_closed_lost        boolean not null default false,
+  hs_lastmodified_ms    bigint,
+  updated_at            timestamptz not null default now()
+);
+create index if not exists idx_sdr_deals_company on sdr_deals(company_id);
+create index if not exists idx_sdr_deals_owner on sdr_deals(deal_owner_id);
+create index if not exists idx_sdr_deals_sdr on sdr_deals(sdr_owner_id);
+create index if not exists idx_sdr_deals_stage on sdr_deals(stage_key);
 
 create table if not exists sdr_owners (
   owner_id   text primary key,
@@ -204,7 +239,7 @@ create index if not exists idx_sdr_roster_active on sdr_roster(active);
 create index if not exists idx_sdr_roster_email on sdr_roster(lower(email));
 
 -- Seeds (idempotent)
-insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('owners'),('lock'),('agent')
+insert into sdr_sync_state(key) values ('calls'),('emails'),('companies'),('deals'),('owners'),('lock'),('agent')
   on conflict (key) do nothing;
 
 insert into sdr_roles(email, role, team_id) values
@@ -221,7 +256,7 @@ insert into sdr_roles(email, role, team_id) values
 do $$
 declare t text;
 begin
-  foreach t in array array['sdr_activities','sdr_companies','sdr_contacts','sdr_owners',
+  foreach t in array array['sdr_activities','sdr_companies','sdr_contacts','sdr_deals','sdr_owners',
                            'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
                            'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
                            'sdr_pods','sdr_managers','sdr_roster']

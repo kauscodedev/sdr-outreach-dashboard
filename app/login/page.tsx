@@ -25,7 +25,7 @@ function LoginInner() {
     <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
         <h1 className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-2xl font-black tracking-tight text-transparent">
-          SDR Outreach Coverage
+          TrackerAI
         </h1>
         <p className="mt-2 text-sm text-slate-500">Sign in with your Spyne account to continue.</p>
         {error === "domain" && (

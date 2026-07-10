@@ -4,18 +4,22 @@ import { makeEtContext, etMidnightUtcMs } from "../sync/buckets";
 import { COVERAGE_ANCHOR } from "../../config/hubspot";
 import { hubspotGet } from "../hubspot/client";
 import { aggregate } from "../sync/aggregate";
-import { resolveAssociations, ContactMeta } from "../sync/associate";
+import { resolveAssociations, resolveDealAssociations, ContactMeta } from "../sync/associate";
 import {
-  pullActivities, pullChangedActivities, pullChangedCompanies, pullOwnedCompanies,
+  pullActivities, pullChangedActivities, pullChangedCompanies, pullChangedDeals, pullOwnedCompanies,
   pullOwnersTeams, PullCaps, RawActivity,
 } from "../sync/pull";
-import { activityToRow, nextWatermark } from "./rows";
+import { Deal } from "../sync/types";
+import { activityToRow, dealToRow, nextWatermark } from "./rows";
 import { loadTeamStructure } from "../team/load";
-import { nameMap, trackedOwnerIds } from "../team/helpers";
+import { nameMap, kindMap, trackedOwnerIds } from "../team/helpers";
 import {
   getWatermark, loadStoreForAggregate, reconcileOwnedCompanies, replaceOwnersTeams,
-  saveSnapshot, setSyncState, tryLock, unlock, upsertActivities, upsertCompanies, upsertContacts,
+  saveSnapshot, setSyncState, tryLock, unlock, upsertActivities, upsertCompanies, upsertContacts, upsertDeals,
 } from "./store";
+
+/** Deal backfill drains everything (well above the per-run delta resume cap of 3). */
+const DEAL_BACKFILL_WINDOWS = 50;
 
 const OVERLAP_MS = 5 * 60_000; // re-read 5 min to absorb clock skew / same-ms writes
 const LOCK_TTL_MIN = 12;
@@ -84,6 +88,16 @@ async function persistResolved(raw: RawActivity[]) {
   return activities.length;
 }
 
+/** Pull → resolve → upsert Auto-Pipeline deals for tracked owners. Returns the enriched deals so
+ *  the caller can advance the `deals` watermark (nextWatermark reads their lastModifiedMs). */
+async function persistDeals(sinceMs: number, maxWindows?: number, ownerIdsOverride?: string[]): Promise<(Deal & { lastModifiedMs: number })[]> {
+  const raw = await pullChangedDeals(sinceMs, maxWindows, ownerIdsOverride);
+  if (!raw.length) return [];
+  const deals = await resolveDealAssociations(raw);
+  await upsertDeals(deals.map((d) => dealToRow(d, d.lastModifiedMs)));
+  return deals;
+}
+
 /** Rebuild the snapshot row from the spine. `expectData` guards the unattended cron:
  *  a delta/reconcile run should always find activities in the spine, so an empty read
  *  means a regression (bad anchor, fetchAll fault) — throw rather than silently
@@ -101,7 +115,8 @@ export async function reaggregate(caps: PullCaps, expectData: boolean) {
   }
   const ctx = makeEtContext(Date.now());
   const snap = aggregate(store.activities, store.companyNames, store.companyGdStage,
-    store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps, { ownerIds, names: nameMap(ts) });
+    store.contactMeta, store.ownedCompanies, ctx, Date.now(), caps,
+    { ownerIds, names: nameMap(ts), kinds: kindMap(ts) }, store.deals);
   const sizeMb = Buffer.byteLength(JSON.stringify(snap)) / 1_048_576;
   console.log(`[spine] snapshot ${sizeMb.toFixed(2)} MB (${store.activities.length} activities)`);
   await saveSnapshot(snap);
@@ -114,20 +129,23 @@ export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
   if (!lease) { console.log("[delta] another run holds the lock — exiting."); return { ran: false }; }
   const t0 = Date.now();
   try {
-    const [wmCalls, wmEmails, wmCompanies] = await Promise.all([
-      getWatermark("calls"), getWatermark("emails"), getWatermark("companies")]);
+    const [wmCalls, wmEmails, wmCompanies, wmDeals] = await Promise.all([
+      getWatermark("calls"), getWatermark("emails"), getWatermark("companies"), getWatermark("deals")]);
     if (wmCalls === 0 && wmEmails === 0 && wmCompanies === 0) throw new Error("Watermarks are zero — run `npm run sync:backfill` first.");
 
     const raw = await pullChangedActivities(Math.max(0, wmCalls - OVERLAP_MS), Math.max(0, wmEmails - OVERLAP_MS), caps);
     const changedCompanies = await pullChangedCompanies(Math.max(0, wmCompanies - OVERLAP_MS));
+    const changedDeals = await persistDeals(Math.max(0, wmDeals - OVERLAP_MS));
 
     let upserted = 0;
     if (raw.length) upserted = await persistResolved(raw);
     if (changedCompanies.length) {
       await upsertCompanies(changedCompanies.map((c) => ({
-        hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: c.ownerId || null, gd_id: c.gdId,
-        is_group: c.isGroup, group_name: c.groupName, segment: c.segment,
-        dealership_type: c.dealershipType, hs_lastmodified_ms: c.lastModifiedMs,
+        hs_id: c.id, name: c.name, gd_stage: c.gdStage, lifecycle_stage: c.lifecycleStage,
+        owner_id: c.ownerId || null, gd_id: c.gdId, is_group: c.isGroup, group_name: c.groupName,
+        segment: c.segment, dealership_type: c.dealershipType,
+        last_activity_ms: c.lastActivityMs, rooftop_last_activity_ms: c.rooftopLastActivityMs,
+        hs_lastmodified_ms: c.lastModifiedMs,
       })));
     }
     const ownerCount = await refreshOwnersTeams();
@@ -138,6 +156,7 @@ export async function runDelta(caps?: PullCaps): Promise<{ ran: boolean }> {
     await setSyncState("calls", { watermark_ms: nextWatermark(wmCalls, calls), last_counts: { changed: calls.length } });
     await setSyncState("emails", { watermark_ms: nextWatermark(wmEmails, emails), last_counts: { changed: emails.length } });
     await setSyncState("companies", { watermark_ms: nextWatermark(wmCompanies, changedCompanies), last_counts: { changed: changedCompanies.length } });
+    await setSyncState("deals", { watermark_ms: nextWatermark(wmDeals, changedDeals), last_counts: { changed: changedDeals.length } });
     await setSyncState("owners", { last_counts: { owners: ownerCount } });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, last_counts: { activities: upserted, snapshotCalls: totals.calls }, notes: "delta ok" });
     console.log(`[delta] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${raw.length} changed activities, ${changedCompanies.length} companies.`);
@@ -161,16 +180,19 @@ export async function runBackfill(caps: PullCaps) {
     await persistResolved(raw);
     const books = await pullOwnedCompanies();
     const rows = Object.entries(books).flatMap(([ownerId, cos]) => cos.map((c) => ({
-      hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: ownerId, gd_id: c.gdId,
+      hs_id: c.id, name: c.name, gd_stage: c.gdStage, lifecycle_stage: c.lifecycleStage, owner_id: ownerId, gd_id: c.gdId,
       is_group: c.isGroup, group_name: c.groupName, segment: c.segment, dealership_type: c.dealershipType,
+      last_activity_ms: c.lastActivityMs, rooftop_last_activity_ms: c.rooftopLastActivityMs,
     })));
     await reconcileOwnedCompanies(rows);
+    const dealCount = (await persistDeals(0, DEAL_BACKFILL_WINDOWS)).length;
+    console.log(`[backfill] deals: ${dealCount} Auto-Pipeline deals for tracked owners.`);
     await refreshOwnersTeams();
     const totals = await reaggregate(caps, false); // backfill legitimately populates an empty spine
     // Watermark = run start − overlap: nothing modified after t0 can have been missed
     // by the pull, and the next delta re-reads the small overlap window on top.
     const wm = t0 - OVERLAP_MS;
-    for (const k of ["calls", "emails", "companies"]) await setSyncState(k, { watermark_ms: wm });
+    for (const k of ["calls", "emails", "companies", "deals"]) await setSyncState(k, { watermark_ms: wm });
     await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: "backfill ok" });
     console.log(`[backfill] done in ${((Date.now() - t0) / 60000).toFixed(1)}m — snapshot totals: ${totals.calls} calls / ${totals.emails} emails.`);
   } finally {
@@ -192,13 +214,15 @@ export async function runOwnerBackfill(ownerId: string, caps?: PullCaps) {
     if (raw.length) await persistResolved(raw);
     const books = await pullOwnedCompanies([ownerId]);
     const rows = Object.entries(books).flatMap(([oid, cos]) => cos.map((c) => ({
-      hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: oid, gd_id: c.gdId,
+      hs_id: c.id, name: c.name, gd_stage: c.gdStage, lifecycle_stage: c.lifecycleStage, owner_id: oid, gd_id: c.gdId,
       is_group: c.isGroup, group_name: c.groupName, segment: c.segment, dealership_type: c.dealershipType,
+      last_activity_ms: c.lastActivityMs, rooftop_last_activity_ms: c.rooftopLastActivityMs,
     })));
     if (rows.length) await upsertCompanies(rows);
+    const dealCount = (await persistDeals(0, DEAL_BACKFILL_WINDOWS, [ownerId])).length;
     await refreshOwnersTeams();
     await reaggregate(caps, true);
-    await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `owner-backfill ok (${ownerId}): ${raw.length} activities, ${rows.length} companies` });
+    await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `owner-backfill ok (${ownerId}): ${raw.length} activities, ${rows.length} companies, ${dealCount} deals` });
     console.log(`[owner-backfill] done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${raw.length} activities, ${rows.length} companies for ${ownerId}.`);
   } finally {
     await unlock(lease);
@@ -214,8 +238,9 @@ export async function runReconcile(caps?: PullCaps) {
     // Full book re-pull: catches owner moves AWAY from tracked reps (delta can't see those).
     const books = await pullOwnedCompanies();
     const rows = Object.entries(books).flatMap(([ownerId, cos]) => cos.map((c) => ({
-      hs_id: c.id, name: c.name, gd_stage: c.gdStage, owner_id: ownerId, gd_id: c.gdId,
+      hs_id: c.id, name: c.name, gd_stage: c.gdStage, lifecycle_stage: c.lifecycleStage, owner_id: ownerId, gd_id: c.gdId,
       is_group: c.isGroup, group_name: c.groupName, segment: c.segment, dealership_type: c.dealershipType,
+      last_activity_ms: c.lastActivityMs, rooftop_last_activity_ms: c.rooftopLastActivityMs,
     })));
     const cleared = await reconcileOwnedCompanies(rows);
     // Re-pull last 7 days of activity in full — refreshes rows that drifted (edited
@@ -223,9 +248,12 @@ export async function runReconcile(caps?: PullCaps) {
     const since = Date.now() - 7 * 86_400_000;
     const raw = await pullActivities(since, Date.now(), caps);
     await persistResolved(raw);
+    // Full deal re-pull heals stage drift + catches deals whose owner moved INTO a tracked rep.
+    // (A deal whose owner moved AWAY from tracked reps is not removed — accepted gap, as with companies.)
+    const dealCount = (await persistDeals(0, DEAL_BACKFILL_WINDOWS)).length;
     await refreshOwnersTeams();
     await reaggregate(caps, true);
-    await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `reconcile ok (cleared ${cleared} stale owners)` });
+    await setSyncState("lock", { last_duration_ms: Date.now() - t0, notes: `reconcile ok (cleared ${cleared} stale owners, ${dealCount} deals refreshed)` });
     console.log(`[reconcile] done in ${((Date.now() - t0) / 60000).toFixed(1)}m.`);
   } finally {
     await unlock(lease);

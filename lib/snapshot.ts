@@ -60,7 +60,7 @@ export function emptySnapshot(): Snapshot {
   for (const id of REP_OWNER_IDS) {
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
     for (const p of PERIOD_KEYS) periods[p] = emptyMetrics();
-    reps[id] = { periods, daily: [], book: emptyBook(), monthly: [] };
+    reps[id] = { periods, daily: [], book: emptyBook(), monthly: [], funnel: { demo_pending: 0, demo_scheduled: 0, demo_done: 0, scheduled_at_risk: 0 } };
   }
   return {
     generated_at_utc: "",
@@ -72,6 +72,7 @@ export function emptySnapshot(): Snapshot {
     window: { start_et: "", end_et: "" },
     totals: { calls: 0, emails: 0, reps: REP_OWNER_IDS.length, window_days: 0 },
     owner_names: REPS,
+    owner_kinds: {},
     reps,
   };
 }

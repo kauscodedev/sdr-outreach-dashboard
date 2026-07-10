@@ -1,8 +1,8 @@
 {
-  "name": "sdr-outreach-dashboard",
-  "version": "1.0.0",
+  "name": "trackerai",
+  "version": "2.0.0",
   "private": true,
-  "description": "SDR outbound outreach coverage dashboard sourced from HubSpot (unique contacts/companies tapped per rep per IST period).",
+  "description": "TrackerAI — SDR & AE account-tracking sales cockpit sourced from HubSpot (coverage, deal funnel, per-account intelligence).",
   "engines": {
     "node": ">=22"
   },

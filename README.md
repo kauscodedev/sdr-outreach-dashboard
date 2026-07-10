@@ -1,6 +1,7 @@
-# SDR Outreach Coverage Dashboard
+# TrackerAI
 
-One-stop SDR **activity + performance** dashboard, gated behind **Google SSO (@spyne.ai only)**.
+**TrackerAI** — the SDR & AE account-tracking sales cockpit (formerly the SDR Outreach Coverage
+Dashboard), gated behind **Google SSO (@spyne.ai only)**.
 Tracks **outbound** outreach by a fixed set of SDRs from HubSpot — unique contacts/companies
 tapped, engagement depth, call-outcome + email breakdowns — across US/Eastern time windows
 (Today / Yesterday / Last 3 days / This week / Last week / This month), plus:

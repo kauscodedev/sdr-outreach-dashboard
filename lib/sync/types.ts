@@ -1,4 +1,7 @@
 /** Shared types for the sync pipeline and the dashboard. */
+import { DealStageKey } from "../../config/deal-stages";
+import { DemoStatus } from "./segmentation";
+import { DealHealth } from "./deal-health";
 
 export const PERIOD_KEYS = [
   "today",
@@ -38,6 +41,26 @@ export interface Activity {
   emailClicked: boolean;
   contactIds: string[];
   companyIds: string[];
+}
+
+/**
+ * A HubSpot deal after pull + association resolution. Scoped to the Auto Pipeline; `stageKey`
+ * is the canonical (pipeline, dealstage) normalization (see config/deal-stages.ts) so all
+ * downstream logic is collision-safe. `dealstage` keeps the raw id for storage/debugging.
+ */
+export interface Deal {
+  id: string;
+  pipeline: string | null;
+  dealstage: string | null; // raw HubSpot stage id
+  stageKey: DealStageKey;
+  dealOwnerId: string | null; // hubspot_owner_id — the AE
+  sdrOwnerId: string | null; // sdr_owner — the SDR credited on the deal
+  companyId: string | null; // primary associated company
+  contactIds: string[];
+  amount: number | null;
+  demoScheduledForMs: number | null; // demo_scheduled_for_date — the meeting date
+  discoveryDoneMs: number | null; // discovery_call_done_stage_date
+  demoDoneMs: number | null; // demo_done_stage_date
 }
 
 export interface CallMetrics {
@@ -112,6 +135,34 @@ export type DealershipType = "Franchise" | "Independent" | "Unknown";
 
 export type Temperature = "hot" | "warm" | "cold";
 
+/**
+ * Enriched last-activity summary for an account (from our synced calls/emails; GD-rolled to the
+ * most-recent rooftop touch). Names resolve via owner_names / the rooftop's contacts.
+ */
+export interface LastActivity {
+  ms: number | null;
+  type: "call" | "email" | null;
+  owner_id: string | null; // who did it (activity doer)
+  contact_name: string | null; // the contact on that most-recent touch
+  outcome: string | null; // disposition label (call) or email status
+}
+
+/**
+ * Per-account deal snapshot — the "demo → closure" facet. The FURTHEST live Auto-Pipeline deal
+ * governs. `health` is set only for accounts with a live advanced deal (Demo Scheduled/Done);
+ * for Demo-Pending accounts it's null and Temperature governs instead (the two-indicator model).
+ */
+export interface AccountDeal {
+  demo_status: DemoStatus;
+  at_risk: boolean; // scheduled demo that bounced / whose date passed
+  has_revivable: boolean; // only dead deals — previously worked, re-workable
+  stage: string | null; // furthest live stage label
+  stage_key: DealStageKey | null;
+  health: DealHealth | null; // null when demo_pending
+  health_reason: string | null;
+  deal_count: number;
+}
+
 /** One engaged contact on a rooftop, with its own activity recency + temperature. */
 export interface RooftopContact {
   id: string;
@@ -142,6 +193,8 @@ export interface RooftopDetail {
   last_ms: number | null; // epoch ms of the rep's latest touch; null if untapped
   temp: Temperature; // cumulative temperature ("cold" + reason "Untouched" when untapped)
   temp_reason: string;
+  deal?: AccountDeal; // deal-derived demo-status + health (present once deals are synced)
+  last_activity?: LastActivity; // enriched last touch (owner/contact/outcome)
   contacts: RooftopContact[]; // engaged contacts, most-engaged first
 }
 
@@ -234,6 +287,7 @@ export interface CompanyBreakdownRow {
   replied: number; // emails replied
   last_ms: number | null; // epoch ms of the account's most recent touch this period
   owned: boolean; // is this company in the rep's owned book?
+  deal?: AccountDeal; // deal-derived demo-status + health (owned accounts with deals)
   contacts_list?: RooftopContact[]; // engaged contacts w/ recency + temp (narrow periods)
 }
 
@@ -289,11 +343,23 @@ export interface MonthMetrics {
   connected: number;
 }
 
+/**
+ * SDR demo-status funnel over the rep's OWNED book (company-owner attributed). Counts are per
+ * owned rooftop. `scheduled_at_risk` is the subset of demo_scheduled that bounced / slipped.
+ */
+export interface RepFunnel {
+  demo_pending: number;
+  demo_scheduled: number;
+  demo_done: number;
+  scheduled_at_risk: number;
+}
+
 export interface RepData {
   periods: Record<PeriodKey, PeriodMetrics>;
   daily: DailyPoint[]; // one point per ET day in the (short) window
   book: BookCoverage; // cumulative owned-book coverage — period-independent
   monthly: MonthMetrics[]; // last 3 US/Eastern months, newest first
+  funnel: RepFunnel; // deal-driven Demo Pending / Scheduled / Done over the owned book
 }
 
 export interface Snapshot {
@@ -307,5 +373,6 @@ export interface Snapshot {
   window: { start_et: string; end_et: string };
   totals: { calls: number; emails: number; reps: number; window_days: number };
   owner_names: Record<string, string>;
+  owner_kinds: Record<string, "sdr" | "ae">; // rep type — drives the SDR/AE toggle (managers/admins)
   reps: Record<string, RepData>;
 }

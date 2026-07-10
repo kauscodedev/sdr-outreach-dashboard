@@ -14,6 +14,9 @@ import {
   isConnected, isMeeting, isMeetingRescheduled, isCallbackHigh, isCallbackLow, isGaveReferral, isNegative, dispositionLabel,
 } from "../../config/dispositions";
 import { classifyTemperature, TempSignals } from "./temperature";
+import { segmentAccount } from "./segmentation";
+import { classifyDealHealth } from "./deal-health";
+import { stageLabel, isLost, stageOrder } from "../../config/deal-stages";
 import {
   EtContext, periodsForActivity, etParts, etDateStr, etMidnightUtcMs, dayIndexToYmd, PORTAL_TZ,
 } from "./buckets";
@@ -21,13 +24,16 @@ import { OwnedCompany } from "./pull";
 import { ContactMeta } from "./associate";
 import {
   Activity,
+  AccountDeal,
   AccountTemp,
   BookCoverage,
   BookUnitDetail,
   CoverageDim,
   DailyPoint,
+  Deal,
   DealershipType,
   Insight,
+  LastActivity,
   MARKET_SEGMENTS,
   MarketSegment,
   MonthMetrics,
@@ -39,6 +45,7 @@ import {
   QualityScore,
   ReachByChannel,
   RepData,
+  RepFunnel,
   RooftopContact,
   RooftopDetail,
   Snapshot,
@@ -84,6 +91,9 @@ interface SigAcc {
   negative: number;
   lastMs: number; // most recent touch (epoch ms)
   lastType: "call" | "email" | null; // channel of that most recent touch
+  lastOwnerId: string | null; // doer of that most recent touch
+  lastContactId: string | null; // a contact on that most recent touch
+  lastDisposition: string | null; // call disposition GUID of that most recent touch (calls only)
   lastPositiveMs: number | null; // most recent positive/soft/reply signal
   lastNegativeMs: number | null; // most recent disqualifying outcome
   negativeLabel: string | null; // label of the most recent negative (for the reason)
@@ -93,7 +103,8 @@ function newSig(): SigAcc {
   return {
     calls: 0, emails: 0, connected: 0, opened: 0, replied: 0,
     meetingScheduled: 0, meetingRescheduled: 0, callbackHigh: 0, callbackLow: 0, gaveReferral: 0, negative: 0,
-    lastMs: 0, lastType: null, lastPositiveMs: null, lastNegativeMs: null, negativeLabel: null,
+    lastMs: 0, lastType: null, lastOwnerId: null, lastContactId: null, lastDisposition: null,
+    lastPositiveMs: null, lastNegativeMs: null, negativeLabel: null,
   };
 }
 
@@ -111,7 +122,12 @@ function mergeSig(into: SigAcc, from: SigAcc): void {
   into.callbackLow += from.callbackLow;
   into.gaveReferral += from.gaveReferral;
   into.negative += from.negative;
-  if (from.lastMs >= into.lastMs) into.lastType = from.lastType;
+  if (from.lastMs >= into.lastMs) {
+    into.lastType = from.lastType;
+    into.lastOwnerId = from.lastOwnerId;
+    into.lastContactId = from.lastContactId;
+    into.lastDisposition = from.lastDisposition;
+  }
   into.lastMs = Math.max(into.lastMs, from.lastMs);
   if (from.lastPositiveMs != null) into.lastPositiveMs = laterMs(into.lastPositiveMs, from.lastPositiveMs);
   if (from.lastNegativeMs != null) {
@@ -123,7 +139,12 @@ function mergeSig(into: SigAcc, from: SigAcc): void {
 
 /** Fold one activity into a signal accumulator — the ONE place outcome business-rules live. */
 function recordSig(s: SigAcc, a: Activity): void {
-  if (a.timestampMs >= s.lastMs) s.lastType = a.type;
+  if (a.timestampMs >= s.lastMs) {
+    s.lastType = a.type;
+    s.lastOwnerId = a.ownerId;
+    s.lastContactId = a.contactIds[0] ?? null;
+    s.lastDisposition = a.type === "call" ? a.disposition : null;
+  }
   s.lastMs = Math.max(s.lastMs, a.timestampMs);
   if (a.type === "call") {
     s.calls++;
@@ -159,6 +180,53 @@ function toSignals(s: SigAcc, tapped?: boolean): TempSignals {
 
 const classify = (s: SigAcc, tapped?: boolean) => classifyTemperature(toSignals(s, tapped));
 const highIntentCount = (s: SigAcc) => s.meetingScheduled + s.meetingRescheduled + s.callbackHigh;
+
+// ── Deal-driven per-account summary (segmentation + Deal Health) ────────────────────
+/** The furthest LIVE deal (dead/out-of-funnel excluded) — governs demo-status + health. */
+function pickFurthestLiveDeal(deals: Deal[]): Deal | null {
+  let best: Deal | null = null;
+  for (const d of deals) {
+    if (isLost(d.stageKey) || d.stageKey === "other") continue;
+    if (!best || stageOrder(d.stageKey) > stageOrder(best.stageKey)) best = d;
+  }
+  return best;
+}
+
+/**
+ * Fold a company's deals into an AccountDeal. Deal Health is set only for accounts with a live
+ * advanced deal (Demo Scheduled/Done); Demo-Pending accounts leave health null so Temperature
+ * governs (the two-indicator model). `lastActivityMs` = the most recent of our synced touch and
+ * HubSpot's notes_last_updated.
+ */
+function accountDealInfo(deals: Deal[], lastActivityMs: number | null, nowMs: number): AccountDeal {
+  const seg = segmentAccount(deals.map((d) => d.stageKey));
+  const info: AccountDeal = {
+    demo_status: seg.status, at_risk: seg.atRisk, has_revivable: seg.hasRevivable,
+    stage: seg.furthestStageKey ? stageLabel(seg.furthestStageKey) : null,
+    stage_key: seg.furthestStageKey, health: null, health_reason: null, deal_count: deals.length,
+  };
+  if (seg.status !== "demo_pending") {
+    const deal = pickFurthestLiveDeal(deals);
+    if (deal) {
+      const hr = classifyDealHealth({ stageKey: deal.stageKey, demoScheduledForMs: deal.demoScheduledForMs, lastActivityMs, nowMs });
+      info.health = hr.health;
+      info.health_reason = hr.reason;
+    }
+  }
+  return info;
+}
+
+/** Enriched last-touch from a signal accumulator (owner/contact/outcome), or undefined if untouched. */
+function buildLastActivity(s: SigAcc, contactMeta: Record<string, ContactMeta>): LastActivity | undefined {
+  if (!s.lastMs) return undefined;
+  return {
+    ms: s.lastMs,
+    type: s.lastType,
+    owner_id: s.lastOwnerId,
+    contact_name: s.lastContactId ? (contactMeta[s.lastContactId]?.name ?? null) : null,
+    outcome: s.lastType === "call" ? dispositionLabel(s.lastDisposition) : "Email",
+  };
+}
 
 // ── Monthly (US/Eastern) new-unique tracking ───────────────────────────────────────
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -335,6 +403,7 @@ function finalize(
   companyGdStage: Record<string, string | null>,
   contactMeta: Record<string, ContactMeta>,
   ownedSet: Set<string>,
+  dealInfoByCompany: Map<string, AccountDeal>,
 ): PeriodMetrics {
   const contacts = reachOf([...acc.contactTouch.values()].map((t) => ({ call: t.call > 0, email: t.email > 0 })));
   const companies = reachOf([...acc.companyStat.values()].map((s) => ({ call: s.calls > 0, email: s.emails > 0 })));
@@ -420,6 +489,7 @@ function finalize(
           replied: s.replied,
           last_ms: s.lastMs || null,
           owned: ownedSet.has(id),
+          deal: dealInfoByCompany.get(id),
           contacts_list: contactsFrom(s.contacts, contactMeta),
         };
       })
@@ -504,6 +574,7 @@ function computeBookCoverage(
   everTapped: Set<string>,
   roofStats: Map<string, RoofAcc>,
   contactMeta: Record<string, ContactMeta>,
+  dealInfoByCompany: Map<string, AccountDeal>,
 ): BookCoverage {
   const units = new Map<string, { name: string; isGroup: boolean; rooftops: OwnedCompany[] }>();
   for (const c of ownedList) {
@@ -560,6 +631,8 @@ function computeBookCoverage(
         negative: stat.negative, disqualified: t.disqualified,
         last_ms: stat.lastMs || null,
         temp: t.temp, temp_reason: t.reason,
+        deal: dealInfoByCompany.get(r.id),
+        last_activity: buildLastActivity(stat, contactMeta),
         contacts: contactsFrom(stat.contacts, contactMeta),
       };
     });
@@ -604,7 +677,8 @@ export function aggregate(
   ctx: EtContext,
   generatedAtMs: number,
   sources: { calls: boolean; emails: boolean },
-  roster: { ownerIds: string[]; names: Record<string, string> },
+  roster: { ownerIds: string[]; names: Record<string, string>; kinds?: Record<string, "sdr" | "ae"> },
+  deals: Deal[] = [],
 ): Snapshot {
   // Tracked set + names are DB-backed (config fallback) — see lib/team/load. Shadowed under the
   // former config names so the aggregation body below is unchanged.
@@ -635,6 +709,15 @@ export function aggregate(
       companyOwner.set(c.id, ownerId);
       companyUnit.set(c.id, c.isGroup && c.gdId ? `gd:${c.gdId}` : `single:${c.id}`);
     }
+  }
+
+  // Auto-Pipeline deals grouped by their primary company (segmentation + Deal Health inputs).
+  const companyDeals = new Map<string, Deal[]>();
+  for (const d of deals) {
+    if (!d.companyId) continue;
+    const list = companyDeals.get(d.companyId) ?? [];
+    list.push(d);
+    companyDeals.set(d.companyId, list);
   }
 
   // Monthly new-unique accumulators (owned-book scoped). firstTap* span ALL history so we can
@@ -710,13 +793,28 @@ export function aggregate(
     windowDates.push(etDateStr(etMidnightUtcMs(y, m, d)));
   }
 
+  // Per-account deal summary (demo-status + Deal Health), keyed by owned company id. Built after
+  // the activity loop so lastActivityMs = max(our synced touch, HubSpot notes_last_updated).
+  const nowMs = generatedAtMs;
+  const dealInfoByCompany = new Map<string, AccountDeal>();
+  for (const ownerId of REP_OWNER_IDS) {
+    const roofMap = bookStat.get(ownerId)!;
+    for (const c of ownedCompanies[ownerId] ?? []) {
+      const dl = companyDeals.get(c.id);
+      if (!dl || dl.length === 0) continue; // no deal → Temperature governs, no AccountDeal
+      const ourLast = roofMap.get(c.id)?.lastMs ?? 0;
+      const lastActivityMs = Math.max(ourLast, c.lastActivityMs ?? 0) || null;
+      dealInfoByCompany.set(c.id, accountDealInfo(dl, lastActivityMs, nowMs));
+    }
+  }
+
   const reps: Record<string, RepData> = {};
   for (const ownerId of REP_OWNER_IDS) {
     const byPeriod = accs.get(ownerId)!;
     const ownedList = ownedCompanies[ownerId] ?? [];
     const ownedSet = ownedSets.get(ownerId)!;
     const periods = {} as Record<PeriodKey, PeriodMetrics>;
-    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyGdStage, contactMeta, ownedSet);
+    for (const p of PERIOD_KEYS) periods[p] = finalize(byPeriod.get(p)!, p, companyNames, companyGdStage, contactMeta, ownedSet, dealInfoByCompany);
 
     const dmap = dailyAcc.get(ownerId)!;
     const daily: DailyPoint[] = windowDates.map((date) => {
@@ -724,7 +822,17 @@ export function aggregate(
       return { date, calls: d.calls, connected: d.connected, emails: d.emails };
     });
 
-    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta);
+    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta, dealInfoByCompany);
+
+    // SDR demo-status funnel over the owned book (per rooftop; no deal → Demo Pending).
+    const funnel: RepFunnel = { demo_pending: 0, demo_scheduled: 0, demo_done: 0, scheduled_at_risk: 0 };
+    for (const c of ownedList) {
+      const di = dealInfoByCompany.get(c.id);
+      const status = di?.demo_status ?? "demo_pending";
+      if (status === "demo_scheduled") { funnel.demo_scheduled++; if (di?.at_risk) funnel.scheduled_at_risk++; }
+      else if (status === "demo_done") funnel.demo_done++;
+      else funnel.demo_pending++;
+    }
 
     const ma = monthAgg.get(ownerId)!;
     const fco = firstTapCo.get(ownerId)!;
@@ -744,7 +852,7 @@ export function aggregate(
       };
     });
 
-    reps[ownerId] = { periods, daily, book, monthly };
+    reps[ownerId] = { periods, daily, book, monthly, funnel };
   }
 
   return {
@@ -757,6 +865,7 @@ export function aggregate(
     window: { start_et: ctx.windowStartDate, end_et: ctx.windowEndDate },
     totals: { calls: totalCalls, emails: totalEmails, reps: REP_OWNER_IDS.length, window_days: Math.round((ctx.nowMs - ctx.windowStartMs) / DAY_MS) },
     owner_names: REPS,
+    owner_kinds: roster.kinds ?? {},
     reps,
   };
 }

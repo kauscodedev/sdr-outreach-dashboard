@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { aggregate } from "../lib/sync/aggregate";
 import { makeEtContext } from "../lib/sync/buckets";
-import { Activity } from "../lib/sync/types";
+import { Activity, Deal } from "../lib/sync/types";
 import { OwnedCompany } from "../lib/sync/pull";
+import { DealStageKey, AUTO_PIPELINE_ID } from "../config/deal-stages";
 import { configTeamStructure } from "../lib/team/config-source";
 import { trackedOwnerIds, nameMap } from "../lib/team/helpers";
 
@@ -31,8 +32,9 @@ function act(partial: Partial<Activity>): Activity {
 
 function own(p: Partial<OwnedCompany> & { id: string }): OwnedCompany {
   return {
-    name: p.id, gdStage: null, gdId: null, isGroup: false,
-    groupName: null, segment: null, dealershipType: null, ...p,
+    name: p.id, gdStage: null, lifecycleStage: null, gdId: null, isGroup: false,
+    groupName: null, segment: null, dealershipType: null,
+    lastActivityMs: null, rooftopLastActivityMs: null, ...p,
   };
 }
 
@@ -321,5 +323,48 @@ describe("monthly new-unique (owned book)", () => {
   it("separates NEW contacts too", () => {
     expect(monthly[0].contacts_engaged).toBe(2); // c1 (X) + c2 (Y) touched this month
     expect(monthly[0].contacts_new).toBe(1); // c2 new; c1 first engaged last month
+  });
+});
+
+describe("aggregate — deals (V2)", () => {
+  const ctx = makeEtContext(NOW);
+  function deal(p: Partial<Deal> & { id: string; companyId: string; stageKey: DealStageKey }): Deal {
+    return {
+      pipeline: AUTO_PIPELINE_ID, dealstage: null, dealOwnerId: null, sdrOwnerId: null,
+      contactIds: [], amount: null, demoScheduledForMs: null, discoveryDoneMs: null, demoDoneMs: null, ...p,
+    };
+  }
+  // Owned book: X (touched, has a scheduled deal), Y (a completed-demo deal), Z (no deal).
+  const owned = { [REP]: [own({ id: "X", name: "Xco" }), own({ id: "Y", name: "Yco" }), own({ id: "Z", name: "Zco" })] };
+  const acts = [act({ companyIds: ["X"], disposition: CONNECTED, contactIds: ["c1"] })];
+  const deals = [
+    deal({ id: "d1", companyId: "X", stageKey: "discovery_done", demoScheduledForMs: NOW + DAY_MS }),
+    deal({ id: "d2", companyId: "Y", stageKey: "demo_done" }),
+  ];
+  const snap = aggregate(
+    acts, { X: "Xco", Y: "Yco", Z: "Zco" }, {}, { c1: { name: "C1", title: null, dm: false } },
+    owned, ctx, NOW, { calls: true, emails: true }, { ...ROSTER, kinds: { [REP]: "sdr" } }, deals,
+  );
+  const rep = snap.reps[REP];
+
+  it("funnel segments owned rooftops (no deal → pending)", () => {
+    expect(rep.funnel.demo_scheduled).toBe(1); // X
+    expect(rep.funnel.demo_done).toBe(1); // Y
+    expect(rep.funnel.demo_pending).toBe(1); // Z (no deal)
+  });
+
+  it("attaches deal block + Deal Health to the rooftop with a live advanced deal", () => {
+    const roofX = rep.book.units.flatMap((u) => u.rooftops).find((r) => r.id === "X");
+    expect(roofX?.deal?.demo_status).toBe("demo_scheduled");
+    expect(roofX?.deal?.health).toBe("green"); // upcoming demo date
+  });
+
+  it("leaves demo-pending accounts without a deal block (Temperature governs)", () => {
+    const roofZ = rep.book.units.flatMap((u) => u.rooftops).find((r) => r.id === "Z");
+    expect(roofZ?.deal).toBeUndefined();
+  });
+
+  it("exposes owner_kinds for the SDR/AE toggle", () => {
+    expect(snap.owner_kinds[REP]).toBe("sdr");
   });
 });

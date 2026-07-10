@@ -5,9 +5,9 @@ import { supabaseAdmin } from "../supabase/admin";
 import { Snapshot } from "../sync/types";
 import { OwnedCompany } from "../sync/pull";
 import { ContactMeta } from "../sync/associate";
-import { ActivityRow, CompanyRow, ContactRow, OwnerRow, TeamMemberRow, TeamRow } from "./types";
-import { rowToActivity, rowToContactMeta, rowToOwnedCompany } from "./rows";
-import { Activity } from "../sync/types";
+import { ActivityRow, CompanyRow, ContactRow, DealRow, OwnerRow, TeamMemberRow, TeamRow } from "./types";
+import { rowToActivity, rowToContactMeta, rowToOwnedCompany, rowToDeal } from "./rows";
+import { Activity, Deal } from "../sync/types";
 
 const BATCH = 500;
 const PAGE = 1000;
@@ -34,6 +34,7 @@ async function upsertBatched(table: string, rows: object[], onConflict: string) 
 export const upsertActivities = (rows: ActivityRow[]) => upsertBatched("sdr_activities", rows, "hs_id");
 export const upsertCompanies = (rows: Partial<CompanyRow>[]) => upsertBatched("sdr_companies", rows as object[], "hs_id");
 export const upsertContacts = (rows: ContactRow[]) => upsertBatched("sdr_contacts", rows, "hs_id");
+export const upsertDeals = (rows: DealRow[]) => upsertBatched("sdr_deals", rows, "hs_id");
 
 /**
  * Owners+teams are small (~100 rows). Upsert FIRST, then prune stale memberships — the app
@@ -145,6 +146,7 @@ export interface StoreForAggregate {
   companyGdStage: Record<string, string | null>;
   contactMeta: Record<string, ContactMeta>;
   ownedCompanies: Record<string, OwnedCompany[]>;
+  deals: Deal[];
 }
 
 export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]): Promise<StoreForAggregate> {
@@ -152,8 +154,12 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
     "hs_id,type,owner_id,ts_ms,disposition,email_status,email_opened,email_replied,email_clicked,contact_ids,company_ids",
     ["ts_ms", "hs_id"], (q) => q.gte("ts_ms", anchorMs));
   const coRows = await fetchAll<CompanyRow>("sdr_companies",
-    "hs_id,name,gd_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type", ["hs_id"]);
+    "hs_id,name,gd_stage,lifecycle_stage,owner_id,gd_id,is_group,group_name,segment,dealership_type,last_activity_ms,rooftop_last_activity_ms", ["hs_id"]);
   const ctRows = await fetchAll<ContactRow>("sdr_contacts", "hs_id,name,title,dm", ["hs_id"]);
+  // Deals are already scoped to tracked owners at pull time, so load them all.
+  const dealRows = await fetchAll<DealRow>("sdr_deals",
+    "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost",
+    ["hs_id"]);
 
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};
@@ -167,7 +173,7 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   const contactMeta: Record<string, ContactMeta> = {};
   for (const r of ctRows) contactMeta[r.hs_id] = rowToContactMeta(r);
 
-  return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies };
+  return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies, deals: dealRows.map(rowToDeal) };
 }
 
 /** Snapshots are stored gzip-compressed (base64 inside the jsonb column). Uncompressed they are

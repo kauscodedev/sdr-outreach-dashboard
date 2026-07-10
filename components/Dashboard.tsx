@@ -97,7 +97,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
     const head = ["Rep","Quality","Grade","Touches","Calls","Connected","Emails","OpenRate","ReplyRate","UniqContacts","DMcontacts","UniqRooftops","BookUnits","GDs","Singles","UnitsTapped","Coverage","ConnectRate","Meetings","Hot","Warm","Cold"];
     const lines = rows.map((r) => { const m = r.m; const b = r.data.book; return [`"${r.name.replace(/"/g,'""')}"`, m.quality.score, m.quality.grade, r.touches, m.calls.total, m.calls.connected, m.emails.sent, m.emails.open_rate, m.emails.reply_rate, m.contacts.total, m.dm_contacts, m.companies.total, b.units_total, b.gds, b.singles, b.units_tapped, b.pct, m.calls.connect_rate, m.meetings_booked, m.temp.hot, m.temp.warm, m.temp.cold].join(","); });
     const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = `sdr-outreach-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
+    const a = document.createElement("a"); a.href = url; a.download = `trackerai-${period}-${snapshot.today_et || "snap"}.csv`; a.click(); URL.revokeObjectURL(url);
   }
 
   const hasData = !!snapshot.generated_at_utc;
@@ -110,7 +110,7 @@ export default function Dashboard({ snapshot, viewer }: { snapshot: Snapshot; co
             <Activity className="h-5 w-5" strokeWidth={2.4} />
           </span>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-ink sm:text-[28px]">SDR Outreach Coverage</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-ink sm:text-[28px]">TrackerAI</h1>
             <p className="mt-0.5 hidden text-sm text-ink-muted sm:block">Quantity × quality of outbound, per rep · reach by activity · cumulative owned-book coverage · US/Eastern · week starts Mon</p>
           </div>
         </div>

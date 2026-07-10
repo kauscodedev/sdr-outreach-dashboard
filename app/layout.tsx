@@ -25,8 +25,8 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SDR Outreach Coverage",
-  description: "Unique outbound contacts & companies tapped per SDR, by US/Eastern time period — sourced from HubSpot.",
+  title: "TrackerAI",
+  description: "TrackerAI — the SDR & AE account-tracking sales cockpit: outbound coverage, deal funnel, and account intelligence sourced from HubSpot.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -10,6 +10,7 @@
 import { hubspotPost, hubspotGet, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
 import { getTrackedOwnerIds } from "../team/load";
 import { ActivityType } from "./types";
+import { AUTO_PIPELINE_ID } from "../../config/deal-stages";
 
 const DAY_MS = 86_400_000;
 const SLICE_MS = 7 * DAY_MS;
@@ -156,11 +157,14 @@ export interface OwnedCompany {
   id: string;
   name: string;
   gdStage: string | null; // lifecycle_stage_gd_level — the GD-level pipeline stage
+  lifecycleStage: string | null; // lifecyclestage — the company-level lifecycle stage
   gdId: string | null; // gd_id — rooftop → Group Dealership key
   isGroup: boolean; // is_this_is_a_part_of_group_dealership_ === "true"
   groupName: string | null; // dealership_group_name (human label)
   segment: string | null; // market_segment (size bucket)
   dealershipType: string | null; // type_of_dealership (Franchise / Independent)
+  lastActivityMs: number | null; // notes_last_updated — any-activity last-touch (company level)
+  rooftopLastActivityMs: number | null; // rooftop_last_activity — GD/rooftop-level last activity
 }
 
 /**
@@ -181,9 +185,10 @@ export async function pullOwnedCompanies(ownerIdsOverride?: string[]): Promise<R
         filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }] }],
         sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
         properties: [
-          "name", "lifecycle_stage_gd_level", "gd_id",
+          "name", "lifecycle_stage_gd_level", "lifecyclestage", "gd_id",
           "is_this_is_a_part_of_group_dealership_", "dealership_group_name",
           "market_segment", "type_of_dealership",
+          "notes_last_updated", "rooftop_last_activity",
         ],
         limit: 100,
       };
@@ -194,11 +199,14 @@ export async function pullOwnedCompanies(ownerIdsOverride?: string[]): Promise<R
           id: r.id,
           name: r.properties.name?.trim() || `Company ${r.id}`,
           gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
+          lifecycleStage: r.properties.lifecyclestage?.trim() || null,
           gdId: r.properties.gd_id?.trim() || null,
           isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
           groupName: r.properties.dealership_group_name?.trim() || null,
           segment: r.properties.market_segment?.trim() || null,
           dealershipType: r.properties.type_of_dealership?.trim() || null,
+          lastActivityMs: toMs(r.properties.notes_last_updated ?? null) || null,
+          rooftopLastActivityMs: toMs(r.properties.rooftop_last_activity ?? null) || null,
         });
       }
       after = res.paging?.next?.after;
@@ -306,13 +314,14 @@ async function pullModifiedSlice(
   properties: string[],
   sinceMs: number,
   ownerIds: string[],
+  ownerProperty = "hubspot_owner_id",
 ): Promise<{ records: HsRecord[]; sawCeiling: boolean }> {
   const collected: HsRecord[] = [];
   let after: string | undefined;
   do {
     const body: Record<string, unknown> = {
       filterGroups: [{ filters: [
-        { propertyName: "hubspot_owner_id", operator: "IN", values: ownerIds },
+        { propertyName: ownerProperty, operator: "IN", values: ownerIds },
         ...extraFilters,
         { propertyName: "hs_lastmodifieddate", operator: "GT", value: String(sinceMs) },
       ] }],
@@ -342,14 +351,16 @@ async function pullModifiedWithResume(
   sinceMs: number,
   ownerIds: string[],
   onRecord: (r: HsRecord) => void,
+  ownerProperty = "hubspot_owner_id",
+  maxWindows = MAX_RESUME_WINDOWS,
 ): Promise<void> {
   let cursor = sinceMs;
   for (let window = 1; ; window++) {
-    const { records, sawCeiling } = await pullModifiedSlice(objectType, extraFilters, properties, cursor, ownerIds);
+    const { records, sawCeiling } = await pullModifiedSlice(objectType, extraFilters, properties, cursor, ownerIds, ownerProperty);
     for (const r of records) onRecord(r);
     if (!sawCeiling) return;
-    if (window >= MAX_RESUME_WINDOWS) {
-      console.warn(`[delta] ${objectType} backlog remains after ${MAX_RESUME_WINDOWS} catch-up windows — will continue next run`);
+    if (window >= maxWindows) {
+      console.warn(`[delta] ${objectType} backlog remains after ${maxWindows} catch-up windows — will continue next run`);
       return;
     }
     const lastMs = toMs(records[records.length - 1].properties.hs_lastmodifieddate ?? null);
@@ -384,8 +395,9 @@ export async function pullChangedActivities(
 }
 
 const COMPANY_DELTA_PROPERTIES = [
-  "name", "lifecycle_stage_gd_level", "gd_id", "is_this_is_a_part_of_group_dealership_",
-  "dealership_group_name", "market_segment", "type_of_dealership", "hubspot_owner_id", "hs_lastmodifieddate",
+  "name", "lifecycle_stage_gd_level", "lifecyclestage", "gd_id", "is_this_is_a_part_of_group_dealership_",
+  "dealership_group_name", "market_segment", "type_of_dealership",
+  "notes_last_updated", "rooftop_last_activity", "hubspot_owner_id", "hs_lastmodifieddate",
 ];
 
 /** Companies owned by tracked reps changed since `sinceMs` (owner moves INTO book, edits).
@@ -397,16 +409,73 @@ export async function pullChangedCompanies(sinceMs: number): Promise<(OwnedCompa
     out.push({
       id: r.id, name: r.properties.name?.trim() || `Company ${r.id}`,
       gdStage: r.properties.lifecycle_stage_gd_level?.trim() || null,
+      lifecycleStage: r.properties.lifecyclestage?.trim() || null,
       gdId: r.properties.gd_id?.trim() || null,
       isGroup: r.properties.is_this_is_a_part_of_group_dealership_ === "true",
       groupName: r.properties.dealership_group_name?.trim() || null,
       segment: r.properties.market_segment?.trim() || null,
       dealershipType: r.properties.type_of_dealership?.trim() || null,
+      lastActivityMs: toMs(r.properties.notes_last_updated ?? null) || null,
+      rooftopLastActivityMs: toMs(r.properties.rooftop_last_activity ?? null) || null,
       ownerId: r.properties.hubspot_owner_id ?? "",
       lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
     });
   });
   return out;
+}
+
+/** A deal after pull, before association resolution (company/contacts resolved in associate.ts). */
+export interface RawDeal {
+  id: string;
+  pipeline: string | null;
+  dealstage: string | null;
+  dealOwnerId: string | null;
+  sdrOwnerId: string | null;
+  amount: number | null;
+  demoScheduledForMs: number | null;
+  discoveryDoneMs: number | null;
+  demoDoneMs: number | null;
+  lastModifiedMs: number;
+}
+
+const DEAL_DELTA_PROPERTIES = [
+  "pipeline", "dealstage", "hubspot_owner_id", "sdr_owner", "amount",
+  "demo_scheduled_for_date", "discovery_call_done_stage_date", "demo_done_stage_date",
+  "hs_lastmodifieddate",
+];
+
+const amountOf = (v: string | null | undefined): number | null => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Auto-Pipeline deals modified since `sinceMs`, where a tracked rep is the AE (`hubspot_owner_id`)
+ * OR the SDR (`sdr_owner`). HubSpot AND-s filters within a group, so we run two owner-scoped passes
+ * and union by id. `maxWindows` lifts the resume cap for backfill (drain everything); the default
+ * keeps the delta bounded per run. Associations are resolved separately (resolveDealAssociations).
+ */
+export async function pullChangedDeals(sinceMs: number, maxWindows?: number, ownerIdsOverride?: string[]): Promise<RawDeal[]> {
+  const ownerIds = ownerIdsOverride ?? await getTrackedOwnerIds();
+  if (ownerIds.length === 0) return [];
+  const seen = new Map<string, HsRecord>();
+  const collect = (r: HsRecord) => { if (!seen.has(r.id)) seen.set(r.id, r); };
+  const pipelineFilter = [{ propertyName: "pipeline", operator: "EQ", value: AUTO_PIPELINE_ID }];
+  await pullModifiedWithResume("deals", pipelineFilter, DEAL_DELTA_PROPERTIES, sinceMs, ownerIds, collect, "hubspot_owner_id", maxWindows);
+  await pullModifiedWithResume("deals", pipelineFilter, DEAL_DELTA_PROPERTIES, sinceMs, ownerIds, collect, "sdr_owner", maxWindows);
+  return [...seen.values()].map((r) => ({
+    id: r.id,
+    pipeline: r.properties.pipeline ?? null,
+    dealstage: r.properties.dealstage ?? null,
+    dealOwnerId: r.properties.hubspot_owner_id ?? null,
+    sdrOwnerId: r.properties.sdr_owner ?? null,
+    amount: amountOf(r.properties.amount),
+    demoScheduledForMs: toMs(r.properties.demo_scheduled_for_date ?? null) || null,
+    discoveryDoneMs: toMs(r.properties.discovery_call_done_stage_date ?? null) || null,
+    demoDoneMs: toMs(r.properties.demo_done_stage_date ?? null) || null,
+    lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
+  }));
 }
 
 export interface HsOwnerWithTeams {
