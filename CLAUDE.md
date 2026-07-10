@@ -28,13 +28,14 @@ non-obvious conventions that span multiple files.
 | `npm run lint` | ESLint (`next/core-web-vitals`) |
 | `npm test` | Run all Vitest unit tests (`vitest run`) |
 | `npm run verify:schema` | Probe that `supabase/sdr_schema.sql` is applied (tables reachable, seeds present, anon blocked) |
-| `npm run sync:backfill` | One-time full pull → Postgres spine (~1 h; run before the first delta, and after adding reps to `config/reps.ts`) |
+| `npm run sync:backfill` | Full pull → Postgres spine (~35–40 min; pulls the whole tracked roster from DB). Run for the first delta / after a big roster change |
 | `npm run sync:delta` | Incremental sync: pull `hs_lastmodifieddate > watermark`, upsert, re-aggregate (O(changes)) |
 | `npm run sync:reconcile` | Nightly drift heal: full owned-book re-pull + 7-day activity re-pull |
-| `npm run sync:reaggregate` | Rebuild the snapshot from the spine **without a HubSpot pull** (recover from a saveSnapshot failure; prints snapshot size) |
-| `npm run agent:run` | One hot-account agent pass (OpenAI reasoning → `sdr_agent_watches`); needs `OPENAI_API_KEY` |
+| `npm run sync:reaggregate` | Rebuild the snapshot from the spine **without a HubSpot pull** (recover from a saveSnapshot failure; logs raw + gzipped size) |
+| `npm run team:seed` | Seed `sdr_roster`/`sdr_pods`/`sdr_managers` from `config/*.ts` (idempotent, edit-safe; validates owner ids vs `sdr_owners`, skips fabricated ones) |
+| `npm run pull:owner` | Targeted full-history pull for ONE owner (`OWNER_ID=… npm run pull:owner`). Used by the admin add-user auto-pull (`spine-pull-owner.yml`) |
 | `npm run content:backfill` | **Opt-in** pull of call notes/transcripts/email subjects → `sdr_activity_content` (kept OFF the delta path) |
-| `npm run sync` | **Legacy** file-snapshot pull → `data/snapshot.json` (pre-spine; retired) |
+| `npm run agent:run` | One hot-account agent pass (OpenAI reasoning → `sdr_agent_watches`); needs `OPENAI_API_KEY` |
 
 All non-`dev`/`build`/`lint`/`test` scripts run via `tsx --conditions=react-server` — required so
 the `server-only` guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node. Scripts
@@ -77,7 +78,7 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   middleware.ts  ── auth gate (session + @spyne.ai domain) ── app/login, app/auth/callback
              ↓
   app/page.tsx   resolveViewer(email) + snapshot (units stripped)  → components/Dashboard.tsx
-  app/admin      roles CRUD + team-structure view + sync health   (admin/leadership only)
+  app/admin      control center: add/update users (email→owner), roster + soft-delete, manage pods/managers, roles, sync health   (admin only)
   app/attention  hot-account task list (AttentionBoard) ← sdr_agent_watches
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
@@ -103,13 +104,16 @@ new-vs-existing tapped rooftops/contacts.
 
 ## Conventions & gotchas (the load-bearing rules)
 
-- **Snapshot size is a hard constraint.** `sdr_snapshots` is ONE jsonb row (~6 MB with 30 reps ×
-  thousands of owned rooftops). The plain upsert intermittently trips Postgres `statement_timeout`.
-  Mitigations: `ROOFTOP_CONTACT_CAP` (12) in `aggregate.ts` bounds contacts per rooftop;
-  `saveSnapshot` prefers the `sdr_save_snapshot(jsonb)` RPC (`SET LOCAL statement_timeout`) and
-  falls back to a **retrying** upsert. If aggregate changes enlarge the snapshot, watch for the
-  timeout and recover with `npm run sync:reaggregate` (spine-only; logs the size). A failed write
-  leaves the last good row intact.
+- **Snapshot is ONE jsonb row, stored gzip-compressed.** At 42 reps × thousands of owned rooftops
+  the raw snapshot is ~9.5 MB, and the single-row write tripped Postgres `statement_timeout` (the
+  RPC's `SET LOCAL` was not effective — the pooler/role default won). `saveSnapshot` (`lib/spine/store.ts`)
+  now **gzip-compresses** it (`packSnapshot` → base64 in the jsonb column, shape `{__gz,v}`) — ~9.5 MB
+  → ~1.7 MB, so the write is small and fast and scales as the roster grows. It still prefers the
+  `sdr_save_snapshot(jsonb)` RPC but **falls back to a retrying upsert on ANY rpc error** (was:
+  only missing-function). `loadSnapshotRow` transparently decompresses via `unpackSnapshot` and
+  still reads legacy raw rows (backward compatible). `ROOFTOP_CONTACT_CAP` (12) still bounds contacts
+  per rooftop. Recover/rebuild with `npm run sync:reaggregate` (spine-only, no HubSpot pull; logs
+  both raw + compressed size). A failed write leaves the last good row intact.
 - **Coverage is attributed to the account's OWNER, not the activity doer** (`aggregate.ts`,
   `companyOwner` map). An owned account is "tapped" — and its rooftop/contact engagement rolls up to
   the owner's book — whenever ANY tracked SDR works it. Per-rep **period** metrics (touches, reach,
@@ -126,16 +130,29 @@ new-vs-existing tapped rooftops/contacts.
   `config/dispositions.ts` `CONNECTED_DISPOSITIONS` count as reaching a human. Ported verbatim from
   `call-scoring-agent/config/dispositions.py`; keep in sync. `connect_rate` excludes null-disposition
   calls from the denominator.
-- **`config/reps.ts` is the single source of truth** for which owner IDs appear (30 SDRs) and is the
-  `IN` filter for HubSpot searches. Adding a rep needs a `sync:backfill`/`reconcile` to pull their
-  history (a delta only catches recently-modified rows).
-- **RBAC is a 3-level focus model in `config/team-structure.ts`** (NOT HubSpot teams). SDR → AE pod
-  → Manager, keyed by owner id; some SDRs are player-coach managers/TLs (TLs roll up to a parent
-  manager). `decideScope` (`lib/access/scope.ts`, pure, unit-tested): admin/leadership → all; AE pod
-  lead by login email → the pod's SDRs; manager/TL by owner id → their subtree + self; individual
-  SDR → own book; else org-wide viewer. **Focus model, not confidentiality** — everyone keeps the
-  "All reps" toggle; `resolveViewer` never throws (degrades to org-wide). `sdr_roles` (DB) still
-  holds admin/leadership overrides; its HubSpot-team columns are vestigial.
+- **The roster + org structure are DB-backed and admin-editable** (`sdr_roster`, `sdr_pods`,
+  `sdr_managers`), NOT hard-coded. `lib/team/load.ts` `loadTeamStructure()` reads them into a
+  `TeamStructure` (`lib/team/types.ts`); `getTrackedOwnerIds()` is the successor to `REP_OWNER_IDS`
+  and is the `IN` filter for HubSpot searches (threaded through `lib/sync/pull.ts`, `aggregate.ts`,
+  `spine/store.ts`+`runner.ts`, `callquality/fetch.ts`). **`config/reps.ts` + `config/team-structure.ts`
+  are now the seed + fallback only** — `lib/team/config-source.ts` `configTeamStructure()` builds a
+  `TeamStructure` from them, used when `sdr_roster` is empty/unreachable so nothing breaks
+  mid-migration. Seed the DB from config with `npm run team:seed` (validates owner ids against
+  `sdr_owners`, skips fabricated ones). Adding a rep still needs history pulled: the admin add-user
+  action auto-fires a **targeted single-owner backfill** (`runOwnerBackfill` → `spine-pull-owner.yml`,
+  needs `GH_DISPATCH_TOKEN`+`GH_REPO`); else `reconcile`/`backfill` catches them. **Never hand-enter
+  owner ids** — resolve by email against `sdr_owners` (owner ids must be real HubSpot owners).
+- **RBAC is a 3-level focus model over the DB `TeamStructure`** (NOT HubSpot teams): SDR → AE pod →
+  Manager, keyed by owner id; some SDRs are player-coach managers/TLs (TLs roll up to a parent).
+  Pure helpers in `lib/team/helpers.ts` (podByEmail/allOwnersInPod/managerKeyByOwnerId/
+  sdrOwnersUnderManager) take a `TeamStructure`. `decideScope` (`lib/access/scope.ts`, pure,
+  unit-tested) takes the structure as a param: admin/leadership → all; AE pod lead by login email →
+  pod's SDRs+AEs; manager/TL by owner id → subtree + self; individual → own book; else org-wide
+  viewer. `resolveViewer` (`lib/access/resolve.ts`) loads the structure from DB + always resolves the
+  login's owner id. **Focus model, not confidentiality** — everyone keeps the "All reps" toggle;
+  `resolveViewer` never throws (degrades to org-wide). Admin add-user: **Role** (User/Manager/Admin →
+  `sdr_roles`) and **Type** (SDR/AE/access-only → `sdr_roster`) are INDEPENDENT — access-only writes
+  no roster row (fixes admins being mislabeled reps).
 - **Snapshot loader must use a static `import()`, not `fs`** (`lib/snapshot.ts`) — a runtime path is
   missed by Vercel output-file-tracing.
 - **The 10k Search ceiling** — legacy full pull slices into 7-day windows; delta pulls cut each
@@ -220,13 +237,15 @@ new-vs-existing tapped rooftops/contacts.
 ## Refresh workflow
 
 - **First-time setup:** apply `supabase/sdr_schema.sql`, run `npm run verify:schema`, then
-  `npm run sync:backfill` once (~1 h).
+  `npm run team:seed` (config → DB roster) and `npm run sync:backfill` once (~35–40 min).
 - **Steady state:** `spine-delta.yml` every 15 min, `spine-reconcile.yml` nightly (06:30 UTC),
   `spine-agent.yml` every 2 h. The delta writes `sdr_snapshots`; the deployed app reads it live (no
-  redeploy needed). Adding reps to `config/reps.ts` needs a reconcile/backfill to pull their history.
+  redeploy needed). Add/remove/re-team people in the **admin control center** (`/admin`) — it writes
+  the DB roster and auto-fires a targeted pull for new reps; no code change or redeploy needed.
 - **Recovery:** `npm run sync:reaggregate` rebuilds the snapshot from the spine (no HubSpot) — use
   after an aggregate change or a `saveSnapshot` timeout.
 - **Manual trigger:** `workflow_dispatch` on any workflow, or `GET /api/sync/delta` with
   `Authorization: Bearer $CRON_SECRET`.
-- **Legacy:** `data/snapshot.json` is an empty placeholder (build-time static import + last-ditch
-  fallback); `npm run sync` + the old `sync.yml` are retired.
+- **Legacy:** `data/snapshot.json` is an empty placeholder kept only as the build-time static-import
+  last-ditch fallback in `lib/snapshot.ts`. The pre-spine file-snapshot sync (`scripts/sync.ts` +
+  `npm run sync` + `sync.yml`) has been removed.

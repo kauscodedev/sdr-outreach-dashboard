@@ -10,7 +10,7 @@
  */
 import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
-import { isAllowedEmail } from "./lib/auth/domain";
+import { isAllowedUser } from "./lib/auth/domain";
 
 // "/api/sync/delta" is public because external pingers have no session — the route
 // self-authenticates via a CRON_SECRET Bearer check. Any future sync route must be
@@ -40,7 +40,7 @@ export async function middleware(req: NextRequest) {
   });
 
   const { data: { user } } = await supabase.auth.getUser();
-  const allowed = !!user && isAllowedEmail(user.email);
+  const allowed = isAllowedUser(user);
   const path = req.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path === p || path.startsWith(`${p}/`));
 
