@@ -11,7 +11,6 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "sync": "tsx scripts/sync.ts",
     "sync:backfill": "tsx --conditions=react-server scripts/spine-backfill.ts",
     "sync:delta": "tsx --conditions=react-server scripts/spine-delta.ts",
     "sync:reconcile": "tsx --conditions=react-server scripts/spine-reconcile.ts",

@@ -27,7 +27,7 @@ function anchorMs(): number {
 
 /** Probe read access + direction enum for one object type. Returns false ONLY on a
  *  403 scope error (cap off, degrade gracefully); any other error — e.g. a transient
- *  5xx — is a real failure and is rethrown (mirrors scripts/sync.ts checkAccess). */
+ *  5xx — is a real failure and is rethrown. */
 async function checkAccess(obj: string, prop: string, expect: string): Promise<boolean> {
   try {
     const def = await hubspotGet<{ options?: { value: string }[] }>(`/crm/v3/properties/${obj}/${prop}`);

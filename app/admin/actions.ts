@@ -56,31 +56,44 @@ export async function addUser(formData: FormData) {
   const first = str(formData, "first_name");
   const last = str(formData, "last_name");
   const email = str(formData, "email").toLowerCase();
-  const role = str(formData, "role") || "user";            // user | manager | admin
-  const managerKey = str(formData, "manager_key") || null; // SDR team (manager/TL); "" = AE
+  const role = str(formData, "role") || "user";            // user | manager | admin  (ACCESS level)
+  const kind = str(formData, "kind") || "sdr";             // sdr | ae | access  (rep TYPE — independent of role)
+  const managerKey = str(formData, "manager_key") || null; // SDR team (manager/TL)
   const aePod = str(formData, "ae_pod") || null;           // AE pod
   if (!email.endsWith("@spyne.ai")) throw new Error("spyne.ai emails only");
   if (!["user", "manager", "admin"].includes(role)) throw new Error("bad role");
+  if (!["sdr", "ae", "access"].includes(kind)) throw new Error("bad type");
 
   const c = sb();
+
+  // Access role → sdr_roles (set first so it works even for access-only / non-HubSpot users).
+  // manager carries a (vestigial) team_id to satisfy the legacy check constraint.
+  if (role === "admin") await c.from("sdr_roles").upsert({ email, role: "admin", team_id: null }, { onConflict: "email" });
+  else if (role === "manager") await c.from("sdr_roles").upsert({ email, role: "manager", team_id: aePod || managerKey || "team" }, { onConflict: "email" });
+  else await c.from("sdr_roles").delete().eq("email", email);
+
+  // "access" = an admin/viewer who is NOT a tracked rep (no book). Never put them in the roster;
+  // remove any prior roster row (fixes people mistakenly added as a rep). Then we're done.
+  if (kind === "access") {
+    await c.from("sdr_roster").delete().eq("email", email);
+    invalidateTeamCache();
+    revalidatePath("/admin");
+    return;
+  }
+
+  // Tracked rep (SDR or AE): resolve the email → real HubSpot owner id (no live HubSpot call).
   const { data: owner } = await c.from("sdr_owners").select("owner_id,email,name").eq("email", email).maybeSingle();
   if (!owner) {
     throw new Error(`No HubSpot user found for ${email}. Confirm the email, or they may be new in ` +
       `HubSpot — run a reconcile to refresh the owner list, then try again.`);
   }
-
-  const kind = managerKey ? "sdr" : "ae"; // "None" in the SDR-team field means this person is an AE
   const name = [first, last].filter(Boolean).join(" ") || owner.name || email;
   const { error } = await c.from("sdr_roster").upsert({
     owner_id: owner.owner_id, email, first_name: first || null, last_name: last || null,
-    name, kind, ae_pod: aePod, manager_key: managerKey, active: true, updated_at: new Date().toISOString(),
+    name, kind, ae_pod: aePod, manager_key: kind === "sdr" ? managerKey : null, // AEs don't report to an SDR manager
+    active: true, updated_at: new Date().toISOString(),
   }, { onConflict: "owner_id" });
   if (error) throw new Error(error.message);
-
-  // Access role → sdr_roles. manager carries a (vestigial) team_id to satisfy the legacy check.
-  if (role === "admin") await c.from("sdr_roles").upsert({ email, role: "admin", team_id: null }, { onConflict: "email" });
-  else if (role === "manager") await c.from("sdr_roles").upsert({ email, role: "manager", team_id: aePod || managerKey || "team" }, { onConflict: "email" });
-  else await c.from("sdr_roles").delete().eq("email", email);
 
   invalidateTeamCache();
   await triggerOwnerPull(owner.owner_id);

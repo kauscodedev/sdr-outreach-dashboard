@@ -51,25 +51,32 @@ export default async function AdminPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-slate-500">Add / update user</h2>
         <p className="mb-4 text-xs text-slate-500">
-          The email is matched to a HubSpot user (so the owner id is always correct). Pick an SDR manager for SDRs, or leave it
-          “None” for AEs. New users get a targeted history pull automatically.
+          <strong>Role</strong> = access level (Admin sees + edits everything). <strong>Type</strong> = whether they’re a tracked
+          rep with a book, independent of role — choose <em>Access only</em> for admins/managers who aren’t SDRs/AEs. SDR/AE
+          types are matched to a HubSpot user (so the owner id is always correct) and get a targeted history pull automatically.
         </p>
         <form action={addUser} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <input name="first_name" placeholder="First name" className={inputCls} />
           <input name="last_name" placeholder="Last name" className={inputCls} />
           <input name="email" required placeholder="name@spyne.ai" className={inputCls} />
-          <select name="role" className={inputCls} defaultValue="user">
-            <option value="user">User</option>
-            <option value="manager">Manager</option>
-            <option value="admin">Admin</option>
+          <select name="role" className={inputCls} defaultValue="user" aria-label="Access role">
+            <option value="user">Role: User</option>
+            <option value="manager">Role: Manager</option>
+            <option value="admin">Role: Admin</option>
           </select>
-          <select name="manager_key" className={inputCls} defaultValue="">
-            <option value="">SDR team — None (AE)</option>
+          <select name="kind" className={inputCls} defaultValue="sdr" aria-label="Type">
+            <option value="sdr">Type: SDR (tracked rep)</option>
+            <option value="ae">Type: AE (tracked rep)</option>
+            <option value="access">Type: Access only (not a rep)</option>
+          </select>
+          <div className="hidden lg:block" />
+          <select name="manager_key" className={inputCls} defaultValue="" aria-label="SDR team">
+            <option value="">SDR team — None</option>
             {Object.values(ts.managers).map((m) => (
               <option key={m.key} value={m.key}>{m.name}{m.parent ? ` (TL → ${mgrName.get(m.parent) ?? m.parent})` : ""}</option>
             ))}
           </select>
-          <select name="ae_pod" className={inputCls} defaultValue="">
+          <select name="ae_pod" className={inputCls} defaultValue="" aria-label="AE pod">
             <option value="">AE pod — None</option>
             {ts.pods.map((p) => <option key={p.key} value={p.key}>{p.name}{p.leadEmail ? ` (${p.leadEmail})` : ""}</option>)}
           </select>

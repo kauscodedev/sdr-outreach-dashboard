@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
-import { isAllowedEmail } from "../../../lib/auth/domain";
+import { isAllowedUser } from "../../../lib/auth/domain";
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
@@ -22,10 +22,10 @@ export async function GET(req: NextRequest) {
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) return NextResponse.redirect(`${origin}/login?error=auth`);
 
-  // Belt-and-braces: middleware is the authoritative domain gate; this check
-  // stops non-spyne sessions at mint time. signOut() cannot clear cookies that
-  // weren't in the REQUEST, so explicitly expire everything set on `res`.
-  if (!isAllowedEmail(data.user?.email)) {
+  // Belt-and-braces: middleware is the authoritative gate; this check stops non-spyne /
+  // non-Google sessions at mint time. signOut() cannot clear cookies that weren't in the
+  // REQUEST, so explicitly expire everything set on `res`.
+  if (!isAllowedUser(data.user)) {
     await supabase.auth.signOut();
     const reject = NextResponse.redirect(`${origin}/login?error=domain`);
     res.cookies.getAll().forEach((c) =>
