@@ -1,0 +1,64 @@
+name: Spine delta heartbeat
+# WHY: GitHub's `schedule:` cron is throttled hard on public repos — the */15 delta actually fires
+# ~hourly with multi-hour gaps. This workflow instead runs ONE long-lived job that loops the delta
+# every ~15 min and re-dispatches itself before the 6h job cap, so cadence no longer depends on
+# GitHub's (unreliable) scheduler. The app-level advisory lock in runDelta makes any trigger overlap
+# safe (a second delta just exits early), so this coexists with spine-delta.yml as belt-and-suspenders.
+#
+# Continuity:
+#   * primary  - self re-dispatch at the end of each ~5h20m loop (needs GH_DISPATCH_TOKEN, a PAT with
+#                actions:write; GITHUB_TOKEN cannot trigger workflow_dispatch by design).
+#   * fallback - a coarse schedule cold-starts a new loop if the self-dispatch chain ever breaks.
+# Without the token you still get ~5h of perfect 15-min syncs per loop, restarted by the schedule.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "27 */3 * * *"
+permissions:
+  contents: read
+concurrency:
+  group: spine-delta-loop
+  cancel-in-progress: true
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Delta loop (every ~15 min for ~5h20m)
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          END=$(( $(date +%s) + 19200 ))
+          CYCLE=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            CYCLE=$((CYCLE + 1))
+            START=$(date +%s)
+            echo "::group::delta cycle $CYCLE ($(date -u +%H:%M:%SZ))"
+            npm run sync:delta || echo "::warning::delta cycle $CYCLE failed - continuing (idempotent; retries next cycle)"
+            echo "::endgroup::"
+            REMAIN=$(( END - $(date +%s) ))
+            [ "$REMAIN" -le 0 ] && break
+            SLEEP=$(( 900 - ($(date +%s) - START) ))
+            [ "$SLEEP" -lt 30 ] && SLEEP=30
+            [ "$SLEEP" -gt "$REMAIN" ] && SLEEP=$REMAIN
+            echo "cycle $CYCLE done; sleeping ${SLEEP}s"
+            sleep "$SLEEP"
+          done
+      - name: Re-dispatch self (continue the 15-min cadence past the 6h job cap)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::GH_DISPATCH_TOKEN not set - cannot self-redispatch. The loop restarts on"
+            echo "::warning::the next scheduled fire. Add the secret for a seamless 15-min cadence."
+            exit 0
+          fi
+          echo "Re-dispatching spine-delta-heartbeat.yml to continue the loop..."
+          gh workflow run spine-delta-heartbeat.yml --ref main
