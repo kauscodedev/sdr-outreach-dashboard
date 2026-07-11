@@ -44,7 +44,7 @@ function emptyBook(): BookCoverage {
   const by_segment = {} as Record<MarketSegment, CoverageDim>;
   for (const s of MARKET_SEGMENTS) by_segment[s] = emptyDim();
   return {
-    units_total: 0, units_tapped: 0, pct: 0, rooftops_total: 0, gds: 0, singles: 0,
+    units_total: 0, units_tapped: 0, units_worked_by_other: 0, units_mixed_owner: 0, pct: 0, rooftops_total: 0, gds: 0, singles: 0,
     by_stage,
     by_dealership: { Franchise: emptyDim(), Independent: emptyDim(), Unknown: emptyDim() },
     by_segment,

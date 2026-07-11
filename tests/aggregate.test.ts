@@ -273,24 +273,60 @@ describe("temperature engine v2 (outcome-driven)", () => {
   });
 });
 
-// ── Owner != activity-doer: a teammate's work still taps the OWNER's book ────────────
-describe("owner != activity-doer coverage", () => {
+// ── Owner != activity-doer: a teammate's work is "worked by others", NOT owner-tapped ─────
+describe("owner != activity-doer coverage (60-day owner-recency model)", () => {
   const ctx = makeEtContext(NOW);
   const OWNER = "69016314"; // Rajveer Singh (owns the account)
   const TEAMMATE = "66975998"; // Sanamdeep — a different tracked rep does the work
 
-  it("counts a teammate's activity on an owned account as tapped in the OWNER's book", () => {
+  it("classifies a teammate's activity on an owned account as WORKED-BY-OTHER, not tapped", () => {
     const owned = { [OWNER]: [own({ id: "W", name: "Westside Auto", gdStage: "Prospect", segment: "mm_single" })] };
     const snap = aggregate(
       [act({ ownerId: TEAMMATE, type: "call", disposition: CONNECTED, contactIds: ["Z"], companyIds: ["W"] })],
       { W: "Westside Auto" }, {}, { Z: { name: "Zed", title: "GM", dm: true } }, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
     );
     const book = snap.reps[OWNER].book;
-    expect(book.units_tapped).toBe(1); // owner's book shows it worked
+    expect(book.units_tapped).toBe(0); // the OWNER did not work it → not tapped
+    expect(book.units_worked_by_other).toBe(1); // a different tracked rep did → its own bucket
     const w = book.units.find((u) => u.key === "single:W")!;
-    expect(w.tapped).toBe(true);
-    expect(w.rooftops[0]).toMatchObject({ tapped: true, calls: 1, connected: 1 });
+    expect(w).toMatchObject({ tapped: false, coverage: "worked_by_other" });
+    expect(w.rooftops[0]).toMatchObject({ coverage: "worked_by_other", calls: 1, connected: 1 });
+    expect(w.temp).not.toBe("cold"); // connected → warm: the account IS engaged, not "untouched"
     expect(snap.reps[TEAMMATE].book.units_total).toBe(0); // teammate owns nothing here
+  });
+
+  it("counts the OWNER's own recent activity as tapped", () => {
+    const owned = { [OWNER]: [own({ id: "W2", name: "Owner-worked Auto", segment: "mm_single" })] };
+    const snap = aggregate(
+      [act({ ownerId: OWNER, type: "call", disposition: CONNECTED, companyIds: ["W2"], timestampMs: NOW - 5 * DAY_MS })],
+      { W2: "Owner-worked Auto" }, {}, {}, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
+    );
+    const book = snap.reps[OWNER].book;
+    expect(book.units_tapped).toBe(1);
+    expect(book.units.find((u) => u.key === "single:W2")!).toMatchObject({ tapped: true, coverage: "tapped" });
+  });
+
+  it("treats the owner's OLD activity (>60 days) as untapped (recency window)", () => {
+    const owned = { [OWNER]: [own({ id: "W3", name: "Stale Auto", segment: "mm_single" })] };
+    const snap = aggregate(
+      [act({ ownerId: OWNER, type: "call", disposition: CONNECTED, companyIds: ["W3"], timestampMs: NOW - 75 * DAY_MS })],
+      { W3: "Stale Auto" }, {}, {}, owned, ctx, NOW, { calls: true, emails: true }, ROSTER,
+    );
+    const book = snap.reps[OWNER].book;
+    expect(book.units_tapped).toBe(0); // owner touched it, but >60d ago → untapped
+    expect(book.units.find((u) => u.key === "single:W3")!.coverage).toBe("untapped");
+  });
+
+  it("flags a GD as mixed-owner when its rooftops span >1 tracked owner", () => {
+    const owned = {
+      [OWNER]: [own({ id: "R1", name: "Group X - A", gdId: "500", isGroup: true, groupName: "Group X" })],
+      [TEAMMATE]: [own({ id: "R2", name: "Group X - B", gdId: "500", isGroup: true, groupName: "Group X" })],
+    };
+    const snap = aggregate([], {}, {}, {}, owned, ctx, NOW, { calls: true, emails: true }, ROSTER);
+    const gdForOwner = snap.reps[OWNER].book.units.find((u) => u.key === "gd:500")!;
+    expect(gdForOwner.mixed_owner).toBe(true); // OWNER owns only part of the GD → flagged
+    expect(snap.reps[OWNER].book.units_mixed_owner).toBe(1);
+    expect(snap.reps[TEAMMATE].book.units.find((u) => u.key === "gd:500")!.mixed_owner).toBe(true);
   });
 });
 

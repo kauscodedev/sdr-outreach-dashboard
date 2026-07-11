@@ -48,6 +48,7 @@ import {
   RepFunnel,
   RooftopContact,
   RooftopDetail,
+  CoverageStatus,
   Snapshot,
   STAGE_GROUPS,
   StageGroup,
@@ -292,10 +293,12 @@ function newAcc(): Acc {
 /** Cumulative, owner-scoped engagement on one OWNED rooftop (feeds the Book Explorer). */
 interface RoofAcc extends SigAcc {
   contacts: Map<string, ContactAcc>;
+  ownerLastMs: number | null; // latest touch whose DOER is the account owner (drives owner-recency coverage)
+  otherLastMs: number | null; // latest touch whose doer is a DIFFERENT tracked rep
 }
 
 function newRoofAcc(): RoofAcc {
-  return { ...newSig(), contacts: new Map() };
+  return { ...newSig(), contacts: new Map(), ownerLastMs: null, otherLastMs: null };
 }
 
 function applyActivity(acc: Acc, a: Activity): void {
@@ -584,11 +587,16 @@ export function unitKeyFor(c: OwnedCompany): { key: string; isGroup: boolean } {
  */
 function computeBookCoverage(
   ownedList: OwnedCompany[],
-  everTapped: Set<string>,
+  everTapped: Set<string>, // "touched ever by anyone" — feeds TEMPERATURE's untouched detection only
   roofStats: Map<string, RoofAcc>,
   contactMeta: Record<string, ContactMeta>,
   dealInfoByCompany: Map<string, AccountDeal>,
+  nowMs: number,
+  gdOwners: Map<string, Set<string>>,
 ): BookCoverage {
+  const OWNER_RECENCY_MS = 60 * 86_400_000; // "tapped" = the OWNER worked it within 60 days
+  const cutoff = nowMs - OWNER_RECENCY_MS;
+  const recent = (ms: number | null | undefined) => (ms ?? 0) >= cutoff && (ms ?? 0) > 0;
   const units = new Map<string, { name: string; isGroup: boolean; rooftops: OwnedCompany[] }>();
   for (const c of ownedList) {
     const { key, isGroup: isGroupUnit } = unitKeyFor(c);
@@ -605,15 +613,24 @@ function computeBookCoverage(
   const untapped_sample: NamedRef[] = [];
   const unitDetails: BookUnitDetail[] = [];
 
-  let units_total = 0, units_tapped = 0, gds = 0, singles = 0, rooftops_total = 0;
+  let units_total = 0, units_tapped = 0, units_worked_by_other = 0, units_mixed_owner = 0, gds = 0, singles = 0, rooftops_total = 0;
 
   for (const [key, u] of units.entries()) {
     units_total++;
     rooftops_total += u.rooftops.length;
     if (u.isGroup) gds++; else singles++;
 
-    const tapped = u.rooftops.some((r) => everTapped.has(r.id));
+    // Owner-recency coverage (60-day window): tapped if the OWNER worked ANY rooftop ≤60d; else
+    // worked_by_other if a DIFFERENT tracked rep did; else untapped. (Temperature still keys off
+    // "ever touched by anyone" below, so an engaged account isn't wrongly shown "untouched".)
+    const anyOwnerRecent = u.rooftops.some((r) => recent(roofStats.get(r.id)?.ownerLastMs));
+    const anyOtherRecent = u.rooftops.some((r) => recent(roofStats.get(r.id)?.otherLastMs));
+    const coverage: CoverageStatus = anyOwnerRecent ? "tapped" : anyOtherRecent ? "worked_by_other" : "untapped";
+    const tapped = anyOwnerRecent;
+    const mixed_owner = u.isGroup && (gdOwners.get(key)?.size ?? 0) > 1;
     if (tapped) units_tapped++;
+    if (coverage === "worked_by_other") units_worked_by_other++;
+    if (mixed_owner) units_mixed_owner++;
 
     // GD-level stage is consistent across a group's rooftops; take the first non-empty.
     const stage = normalizeGdStage(u.rooftops.map((r) => r.gdStage).find(Boolean) ?? null);
@@ -624,19 +641,19 @@ function computeBookCoverage(
     bump(by_segment[segment], tapped);
     bump(u.isGroup ? by_group_kind.group : by_group_kind.single, tapped);
 
-    if (!tapped && untapped_sample.length < UNTAPPED_SAMPLE_CAP) {
+    if (coverage === "untapped" && untapped_sample.length < UNTAPPED_SAMPLE_CAP) {
       untapped_sample.push({ id: u.rooftops[0].id, name: u.name, stage });
     }
 
     const unitStat = newRoofAcc();
     const rooftops: RooftopDetail[] = u.rooftops.map((r) => {
-      const rTapped = everTapped.has(r.id);
       const stat = roofStats.get(r.id) ?? newRoofAcc();
+      const rCoverage: CoverageStatus = recent(stat.ownerLastMs) ? "tapped" : recent(stat.otherLastMs) ? "worked_by_other" : "untapped";
       mergeSig(unitStat, stat);
-      const t = classify(stat, rTapped); // handles the untapped case → cold / "Untouched"
+      const t = classify(stat, everTapped.has(r.id)); // temperature keys off "touched ever by anyone"
 
       return {
-        id: r.id, name: r.name, tapped: rTapped,
+        id: r.id, name: r.name, tapped: rCoverage === "tapped", coverage: rCoverage,
         calls: stat.calls, emails: stat.emails, connected: stat.connected,
         opened: stat.opened, replied: stat.replied,
         meetings: stat.meetingScheduled, high_intent: highIntentCount(stat),
@@ -655,9 +672,10 @@ function computeBookCoverage(
       return a.name.localeCompare(b.name);
     });
 
-    const unitTemp = classify(unitStat, tapped);
+    const unitHasActivity = u.rooftops.some((r) => everTapped.has(r.id)); // temperature only
+    const unitTemp = classify(unitStat, unitHasActivity);
     unitDetails.push({
-      key, name: u.name, isGroup: u.isGroup, stage, dealership, segment, tapped,
+      key, name: u.name, isGroup: u.isGroup, stage, dealership, segment, tapped, coverage, mixed_owner,
       temp: unitTemp.temp, temp_reason: unitTemp.reason,
       rooftops,
     });
@@ -670,7 +688,7 @@ function computeBookCoverage(
   });
 
   const book: BookCoverage = {
-    units_total, units_tapped,
+    units_total, units_tapped, units_worked_by_other, units_mixed_owner,
     pct: units_total ? round(units_tapped / units_total, 3) : 0,
     rooftops_total, gds, singles,
     by_stage, by_dealership, by_segment, by_group_kind, units: unitDetails, untapped_sample,
@@ -716,10 +734,15 @@ export function aggregate(
   // when the owner does it themselves. Fixes owner≠activity-doer accounts reading as untouched.
   const companyOwner = new Map<string, string>();
   const companyUnit = new Map<string, string>(); // owned company -> its GD/Single unit key
+  // Distinct tracked owners per unit key — a GD spanning >1 owner is "mixed owner" (only partially
+  // this rep's book; the rest sits in other reps' books). Flagged so the case can be reassigned.
+  const gdOwners = new Map<string, Set<string>>();
   for (const ownerId of REP_OWNER_IDS) {
     for (const c of ownedCompanies[ownerId] ?? []) {
       companyOwner.set(c.id, ownerId);
-      companyUnit.set(c.id, unitKeyFor(c).key);
+      const uk = unitKeyFor(c).key;
+      companyUnit.set(c.id, uk);
+      (gdOwners.get(uk) ?? gdOwners.set(uk, new Set()).get(uk)!).add(ownerId);
     }
   }
 
@@ -773,6 +796,10 @@ export function aggregate(
       const roofMap = bookStat.get(owner)!;
       const racc = roofMap.get(co) ?? newRoofAcc();
       recordSig(racc, a);
+      // Split the latest touch by doer: owner's own vs a different tracked rep — drives the
+      // owner-recency coverage buckets (tapped / worked_by_other) in computeBookCoverage.
+      if (a.ownerId === owner) racc.ownerLastMs = Math.max(racc.ownerLastMs ?? 0, a.timestampMs);
+      else racc.otherLastMs = Math.max(racc.otherLastMs ?? 0, a.timestampMs);
       for (const cid of a.contactIds) {
         const ct = racc.contacts.get(cid) ?? newSig();
         recordSig(ct, a);
@@ -834,7 +861,7 @@ export function aggregate(
       return { date, calls: d.calls, connected: d.connected, emails: d.emails };
     });
 
-    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta, dealInfoByCompany);
+    const book = computeBookCoverage(ownedList, everTapped.get(ownerId)!, bookStat.get(ownerId)!, contactMeta, dealInfoByCompany, generatedAtMs, gdOwners);
 
     // SDR demo-status funnel over the owned book (per rooftop; no deal → Demo Pending).
     const funnel: RepFunnel = { demo_pending: 0, demo_scheduled: 0, demo_done: 0, scheduled_at_risk: 0 };

@@ -36,6 +36,7 @@ export interface RooftopNode {
   last_ms: number | null;
   contacts: RooftopContact[];
   tapped?: boolean;
+  coverage?: "tapped" | "worked_by_other" | "untapped"; // owner-recency bucket (Book Explorer)
   stage?: string;
   disqualified?: boolean;
 }
@@ -76,7 +77,8 @@ function ContactsTable({ contacts }: { contacts: RooftopContact[] }) {
 
 function RooftopRow({ r }: { r: RooftopNode }) {
   const [open, setOpen] = useState(false);
-  const untapped = r.tapped === false;
+  const untapped = r.coverage ? r.coverage === "untapped" : r.tapped === false;
+  const workedByOther = r.coverage === "worked_by_other";
   return (
     <div className="border-b border-line/60 last:border-0">
       <button
@@ -89,7 +91,10 @@ function RooftopRow({ r }: { r: RooftopNode }) {
           <span className="truncate font-medium text-ink">{r.name}</span>
           <a href={companyUrl(r.id)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="shrink-0 text-ink-subtle hover:text-primary"><ExternalLink className="h-3 w-3" /></a>
         </span>
-        <span className="tabular-nums text-ink-muted">{untapped ? <span className="italic text-ink-subtle">untouched</span> : `${fmt(r.contacts.length)} contact${r.contacts.length === 1 ? "" : "s"}`}</span>
+        <span className="tabular-nums text-ink-muted">
+          {untapped ? <span className="italic text-ink-subtle">untouched</span>
+            : <>{fmt(r.contacts.length)} contact{r.contacts.length === 1 ? "" : "s"}{workedByOther && <span className="ml-1 rounded bg-warn-weak px-1 py-0 text-[9px] font-semibold not-italic text-ink-muted" title="The owner hasn't worked this in 60 days — a different rep did">by others</span>}</>}
+        </span>
         <span className="flex items-center justify-between gap-2">
           <span className="hidden tabular-nums text-[10px] text-ink-subtle sm:inline">{fmt(r.calls)}c · {fmt(r.emails)}e · {etDate(r.last_ms)}</span>
           <TempBadge temp={r.temp} title={r.temp_reason} />
@@ -125,7 +130,7 @@ function UnitRow({ u }: { u: BookUnitDetail }) {
   const tappedRoofs = u.rooftops.filter((r) => r.tapped).length;
   const cov = u.rooftops.length ? tappedRoofs / u.rooftops.length : 0;
   return (
-    <div className={cn("border-b border-line/60 last:border-0", !u.tapped && "bg-warn-weak/40")}>
+    <div className={cn("border-b border-line/60 last:border-0", u.coverage === "untapped" && "bg-warn-weak/40")}>
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -138,6 +143,8 @@ function UnitRow({ u }: { u: BookUnitDetail }) {
             : <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink-subtle" />}
           <span className="truncate font-semibold text-ink">{u.name}</span>
           {u.isGroup && <Chip tone="primary" className="px-1 py-0 text-[9px]">GD</Chip>}
+          {u.mixed_owner && <span className="shrink-0 rounded bg-warn-weak px-1 py-0 text-[9px] font-semibold text-ink-muted" title="Rooftops of this GD are owned by more than one rep — only partially your book. Flag for reassignment.">shared</span>}
+          {u.coverage === "worked_by_other" && <span className="shrink-0 rounded bg-surface-muted px-1 py-0 text-[9px] font-semibold text-ink-subtle" title="You haven't worked this in 60 days — a different rep has">worked by others</span>}
         </span>
         <span className="tabular-nums text-ink-muted">{fmt(u.rooftops.length)}</span>
         <span><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", STAGE_CHIP[u.stage])}>{u.stage}</span></span>

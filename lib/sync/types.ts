@@ -178,11 +178,17 @@ export interface RooftopContact {
   temp: Temperature; // per-contact temperature (same engine as the account)
 }
 
+/** Owner-recency coverage of a rooftop/unit over a 60-day window: "tapped" = the account OWNER
+ *  worked it ≤60d; "worked_by_other" = only a DIFFERENT tracked rep did (owner didn't); "untapped" =
+ *  no tracked activity ≤60d. `tapped` (kept for back-compat) mirrors coverage === "tapped". */
+export type CoverageStatus = "tapped" | "worked_by_other" | "untapped";
+
 /** One owned rooftop inside a book unit — cumulative, owner-scoped engagement. */
 export interface RooftopDetail {
   id: string;
   name: string;
-  tapped: boolean;
+  tapped: boolean; // coverage === "tapped" (owner worked it in the 60-day window)
+  coverage: CoverageStatus; // owner-recency bucket
   calls: number; // outbound calls by the OWNING rep (anchor window)
   emails: number;
   connected: number; // calls that reached a human
@@ -208,21 +214,26 @@ export interface BookUnitDetail {
   stage: StageGroup;
   dealership: DealershipType;
   segment: MarketSegment;
-  tapped: boolean;
+  tapped: boolean; // coverage === "tapped"
+  coverage: CoverageStatus; // owner-recency bucket for the unit (tapped if ANY rooftop is owner-recent)
+  mixed_owner: boolean; // GD whose rooftops are owned by >1 tracked rep — only partially this rep's book
   temp: Temperature; // unit-level temperature (aggregated from rooftops for GD, single rooftop for single unit)
   temp_reason: string; // why this temperature
   rooftops: RooftopDetail[]; // tapped first (by calls+emails desc), then untapped (name asc)
 }
 
 /**
- * Cumulative coverage of a rep's owned book, rolled up to GD/Single units. Monotonic: a
- * unit stays tapped once the owning rep has ever put an outbound activity on any of its
- * rooftops (over the coverage-anchor window). Drop-off / junk accounts stay in the
- * denominator as long as they are still owned by the rep.
+ * Coverage of a rep's owned book, rolled up to GD/Single units. "Tapped" = the OWNER worked a
+ * rooftop of the unit within the last 60 days (owner-recency, NOT "ever" and NOT another rep).
+ * A unit the owner hasn't worked in 60d but a different tracked rep has → worked_by_other (its own
+ * bucket, not counted as tapped or untapped). Drop-off / junk accounts stay in the denominator as
+ * long as they are still owned by the rep.
  */
 export interface BookCoverage {
   units_total: number; // distinct GD/single units owned
-  units_tapped: number; // units with >=1 rooftop tapped by the owner
+  units_tapped: number; // units the OWNER worked in the last 60 days (>=1 rooftop)
+  units_worked_by_other: number; // NOT owner-tapped, but a different tracked rep worked it ≤60d
+  units_mixed_owner: number; // GD units whose rooftops span >1 tracked owner (partial ownership)
   pct: number; // units_tapped / units_total
   rooftops_total: number; // raw owned rooftops (reference)
   gds: number; // distinct group units
