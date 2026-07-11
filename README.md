@@ -11,8 +11,15 @@ tapped, engagement depth, call-outcome + email breakdowns — across US/Eastern 
   reconciled with book coverage by construction.
 - **Call quality** (read-only from the call-scoring pipeline's Supabase): per-connected-call
   BANTIC scores + drill-down, weekly coaching snapshots, Call Q column in the rep table.
+- **Deals + demo funnel (V2)**: HubSpot deals (Auto Pipeline) segment every owned company into
+  **Demo Pending / Scheduled / Done**, with a per-rep funnel on the home page and an **SDR/AE toggle**
+  for managers.
+- **Deal Health (V2)**: accounts with a live deal get a green/yellow/red health (stage + recency);
+  accounts without one keep hot/warm/cold temperature.
+- **Accounts page (V2)** (`/accounts`): the owned book by demo-status, drilling GD → rooftop → contact
+  with Deal Health / temperature + last-activity per rooftop.
 
-Built to answer: **are all accounts being tapped — and how well are we working them?**
+Built to answer: **are all accounts being tapped — and how well are we working them, from lead to demo to close?**
 
 ## Architecture
 

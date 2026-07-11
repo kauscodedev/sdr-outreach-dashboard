@@ -4,17 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An SDR outbound-outreach dashboard for sales leadership. It started as a **coverage** tool
-(*are all accounts being tapped?*) and now layers **intelligence** on top:
+**TrackerAI** (renamed from "SDR Outreach Coverage") — an SDR & AE **account-tracking sales cockpit**
+for sales leadership. It began as a **coverage** tool (*are all accounts being tapped?*) and now layers
+the full **lead→demo→closure funnel** + **intelligence** on top:
 
 - **Coverage/quality** — per rep and per US/Eastern window: unique contacts/companies touched,
-  depth, call-outcome + email breakdown, cumulative owned-book coverage, a composite quality score.
-- **Account temperature (v2)** — hot/warm/cold from call *outcomes* + engagement, with a
-  recency-aware "disqualified" rule (`lib/sync/temperature.ts`).
-- **Monthly new-vs-existing** — per rep, how many rooftops/contacts were worked this month and how
-  many are brand new (first ever worked that month) — `RepData.monthly`.
+  depth, call-outcome + email breakdown, owned-book coverage, a composite quality score.
+- **Deals + demo-status funnel (V2)** — HubSpot **deals** are a first-class object (Auto Pipeline).
+  Each owned company is segmented **Demo Pending / Scheduled / Done** (`lib/sync/segmentation.ts`), and
+  `RepData.funnel` counts them per rep. Canonical, collision-safe stage model in `config/deal-stages.ts`.
+- **Two-indicator health (V2)** — accounts *with* a live deal get **Deal Health** green/yellow/red
+  (`lib/sync/deal-health.ts`, stage + recency); accounts *without* one keep **Temperature** hot/warm/cold
+  (`lib/sync/temperature.ts`). Never merged — Temperature governs lead→demo, Deal Health governs demo→closure.
+- **Account temperature** — hot/warm/cold from call *outcomes* + engagement, recency-aware "disqualified" rule.
+- **Coverage (owner-recency)** — `CoverageStatus` = `tapped` (the OWNER worked it ≤60d) /
+  `worked_by_other` (only a different tracked rep did) / `untapped`; GD units flag `mixed_owner`.
+- **Monthly new-vs-existing** — per rep, rooftops/contacts worked this month + how many are brand new.
 - **Hot-account AI agent** — an OpenAI copilot that watches hot accounts and produces a grounded
   "why hot + next step" task list at `/attention` (`lib/agent/*`). HubSpot read-only.
+
+Surfaces: **Overview** (`/`, the rep table + Demo funnel + SDR/AE toggle), **Accounts** (`/accounts`,
+owned book by demo-status with GD→rooftop→contact drill, Deal Health/Temperature + last-activity),
+**Attention** (`/attention`), **Admin** (`/admin`). Shared top-nav in `components/AppNav.tsx`.
 
 Read `README.md` for product definitions and setup. This file covers architecture and the
 non-obvious conventions that span multiple files.
@@ -43,11 +54,13 @@ load env from `.env` then `.env.local` (so put local secrets, incl. `OPENAI_API_
 
 Run a **single test**: `npx vitest run tests/temperature.test.ts` (add `-t "name"` to filter by
 test name; drop `run` for watch mode). Tests (`tests/`) cover only pure logic: US/Eastern bucketing
-(`buckets.test.ts`, incl. DST cases), aggregation incl. GD book units + owner≠doer + monthly
-(`aggregate.test.ts`), the temperature classifier (`temperature.test.ts`), call-quality mappers
-(`callquality.test.ts`), spine row mappers (`spine-rows.test.ts`), the RBAC scope decision
-(`access.test.ts`), the agent detector (`agent-detect.test.ts`), and the auth-domain rule
-(`auth-domain.test.ts`). Never import a `server-only`-guarded module (`lib/supabase/admin.ts`,
+(`buckets.test.ts`, incl. DST cases), aggregation incl. GD book units + owner≠doer + monthly + deal
+integration (`aggregate.test.ts`), the temperature classifier (`temperature.test.ts`), the canonical
+deal-stage engine incl. the pipeline-collision guard (`deal-stages.test.ts`), demo-status segmentation
+(`segmentation.test.ts`), Deal Health (`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`),
+spine row mappers incl. deal mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`),
+the agent detector (`agent-detect.test.ts`), and the auth-domain rule (`auth-domain.test.ts`). Never
+import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
 Node 22+ required (`engines.node`; workflows pin `node-version: 22`). Hard floor:
@@ -65,11 +78,12 @@ SSO (spyne.ai only), and login → owner → AE-pod/manager resolves a per-viewe
 ```
 scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions cron — NOT on Vercel)
   └─ lib/spine/runner.ts   orchestration (watermark-driven, advisory-locked, idempotent)
-       ├─ lib/sync/pull.ts        pullChangedActivities / pullChangedCompanies (hs_lastmodifieddate > watermark)
-       ├─ lib/sync/associate.ts   resolve activity → contact → company (v4 batch reads)
-       ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/owners; saveSnapshot()
-       └─ lib/sync/aggregate.ts   rebuild the Snapshot: reach, temperature (lib/sync/temperature.ts),
-                                   owner-attributed coverage, monthly new-unique, quality, insights
+       ├─ lib/sync/pull.ts        pullChangedActivities / pullChangedCompanies / pullChangedDeals (hs_lastmodifieddate > watermark)
+       ├─ lib/sync/associate.ts   resolve activity/deal → contact → company (v4 batch reads); resolveDealAssociations
+       ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/deals/owners; saveSnapshot()
+       └─ lib/sync/aggregate.ts   rebuild the Snapshot: reach, temperature (temperature.ts), Deal Health
+                                   (deal-health.ts), demo-status (segmentation.ts), owner-recency coverage,
+                                   per-rep funnel, monthly new-unique, quality, insights
              ↓  saveSnapshot()  (sdr_save_snapshot RPC, else retrying upsert)
   sdr_snapshots (one jsonb row, id=1)   ← the delta writes this; getSnapshot reads it first
              ↓
@@ -77,9 +91,11 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
              ↓
   middleware.ts  ── auth gate (session + @spyne.ai domain) ── app/login, app/auth/callback
              ↓
-  app/page.tsx   resolveViewer(email) + snapshot (units stripped)  → components/Dashboard.tsx
+  components/AppNav.tsx  shared top-nav: Overview · Accounts · Attention · Admin
+  app/page.tsx   resolveViewer(email) + snapshot (units stripped)  → components/Dashboard.tsx (rep table, Demo funnel, SDR/AE toggle)
+  app/accounts   resolveViewer + snapshot → components/Accounts.tsx  (owned book by demo-status; lazy per-rep units via /book)
   app/admin      control center: add/update users (email→owner), roster + soft-delete, manage pods/managers, roles, sync health   (admin only)
-  app/attention  hot-account task list (AttentionBoard) ← sdr_agent_watches
+  app/attention  hot-account task list (AttentionBoard / AttentionBoardEnhanced) ← sdr_agent_watches
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
 
@@ -87,20 +103,28 @@ scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)
   └─ lib/agent/runner.ts  runAgent: hot accounts (snapshot) → detect.ts → OpenAI (openai.ts) → sdr_agent_watches/notes
 ```
 
-The heavy pull runs **outside Vercel** (a sync exceeds serverless limits): delta every 15 min
-(`spine-delta.yml`), reconcile nightly (`spine-reconcile.yml`), agent every 2 h (`spine-agent.yml`).
-Shared contracts: `lib/sync/types.ts` (sync↔UI), `lib/spine/types.ts` (`sdr_*` rows + `Viewer`),
-`lib/callquality/types.ts` (read-only call-scoring), `lib/agent/types.ts` (agent I/O).
+The heavy pull runs **outside Vercel** (a sync exceeds serverless limits). Cadence: the delta is driven
+by a **self-perpetuating heartbeat** (`spine-delta-heartbeat.yml`, loops `sync:delta` every ~15 min and
+self-redispatches — defeats GitHub's throttled `schedule:`; see the sync convention below), with
+`spine-delta.yml` (`*/15`) as a fallback; reconcile nightly (`spine-reconcile.yml`); agent every 2 h
+(`spine-agent.yml`). Shared contracts: `lib/sync/types.ts` (sync↔UI, incl. `Deal`, `AccountDeal`,
+`RepFunnel`, `CoverageStatus`, `DemoStatus`, `DealHealth`), `lib/spine/types.ts` (`sdr_*` rows +
+`Viewer` incl. `kind`), `config/deal-stages.ts` (canonical stage model), `lib/callquality/types.ts`
+(read-only call-scoring), `lib/agent/types.ts` (agent I/O).
 
 ### Data model
-`Snapshot` → `reps[ownerId]` → `{ periods[periodKey]: PeriodMetrics, daily[], book, monthly[] }`.
+`Snapshot` → `owner_names`, **`owner_kinds`** (id→`sdr`/`ae`, drives the SDR/AE toggle), `reps[ownerId]`
+→ `{ periods[periodKey]: PeriodMetrics, daily[], book, monthly[], funnel }`.
 Six US/Eastern periods (`today`…`this_month`). `PeriodMetrics` bundles volume, reach-by-channel,
 DM reach, `temp` (AccountTemp counts), and quality. The three **narrow periods** (`today`,
 `yesterday`, `this_week`) also carry `company_breakdown` (per-account rows with enriched contact
-lists) — others omit it to keep the snapshot small. `RepData.book` (`BookCoverage`) is **cumulative,
-period-independent**; `book.units` is the GD → rooftop → contacts Book-Explorer drill-down (heavy —
-stripped from the page, lazy-loaded via `/book`). `RepData.monthly` is the last 3 ET months of
-new-vs-existing tapped rooftops/contacts.
+lists + an `AccountDeal` block) — others omit it to keep the snapshot small. `RepData.book`
+(`BookCoverage`) is **period-independent**; `book.units` is the GD → rooftop → contacts drill-down
+(heavy — stripped from the page, lazy-loaded via `/book`; the Accounts page reuses it). Each
+`RooftopDetail` carries `coverage` (`CoverageStatus`), an optional `deal` (`AccountDeal`: demo-status,
+Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome/owner/contact).
+**`RepData.funnel`** (`RepFunnel`) counts owned rooftops by demo-status (Pending/Scheduled/Done +
+`scheduled_at_risk`). `RepData.monthly` is the last 3 ET months of new-vs-existing tapped rooftops/contacts.
 
 ## Conventions & gotchas (the load-bearing rules)
 
@@ -115,9 +139,17 @@ new-vs-existing tapped rooftops/contacts.
   per rooftop. Recover/rebuild with `npm run sync:reaggregate` (spine-only, no HubSpot pull; logs
   both raw + compressed size). A failed write leaves the last good row intact.
 - **Coverage is attributed to the account's OWNER, not the activity doer** (`aggregate.ts`,
-  `companyOwner` map). An owned account is "tapped" — and its rooftop/contact engagement rolls up to
-  the owner's book — whenever ANY tracked SDR works it. Per-rep **period** metrics (touches, reach,
-  daily) stay per activity-doer.
+  `companyOwner` map). Engagement on an owned rooftop rolls up to the owner's book whenever ANY tracked
+  rep works it. Per-rep **period** metrics (touches, reach, daily) stay per activity-doer.
+- **Coverage status is owner-recency, 3-state** (`CoverageStatus`, `aggregate.ts` `computeBookCoverage`;
+  `RoofAcc.ownerLastMs`/`otherLastMs`): `tapped` = the **OWNER** worked the rooftop within **60d**
+  (`OWNER_RECENCY_MS`); `worked_by_other` = only a *different* tracked rep did (owner didn't) within 60d;
+  else `untapped`. A GD unit is `tapped` if ANY rooftop is owner-recent, and flags `mixed_owner` when its
+  rooftops span >1 tracked owner (only partially this rep's book — `gdOwners`). This replaced the old
+  monotonic "tapped once ever by anyone" boolean. **Temperature still keys off the all-history "touched
+  ever by anyone" set (`everTapped`)** for its untouched detection — the two notions are intentionally
+  distinct. Unit vs single classification is by **group association**, not the raw `is_group` flag
+  (`unitKeyFor`).
 - **Temperature is outcome-driven (`lib/sync/temperature.ts`, `classifyTemperature`).** Pure
   classifier over per-account signal counts (built in `aggregate.ts` from the raw disposition GUID
   on every `sdr_activities` row via `config/dispositions.ts` categories). Rules, first match wins:
@@ -126,6 +158,21 @@ new-vs-existing tapped rooftops/contacts.
   connected-but-negative outcome (Not Interested, Not a Right POC, bad/wrong number, left org) pulls
   the account to cold — **unless a more recent positive signal revives it** (recency via
   `lastPositiveMs`/`lastNegativeMs`). Same engine runs per account, per owned rooftop, and per contact.
+  **Two-indicator rule:** Temperature only governs accounts with **no live deal**; accounts with a live
+  deal show **Deal Health** instead (see the deals bullet). In the snapshot, a rooftop's `deal.health` is
+  null exactly when Temperature governs — the UI picks whichever is set.
+- **Deals are Auto-Pipeline-only + collision-safe (`config/deal-stages.ts`).** HubSpot's `dealstage` is
+  one flattened enum shared across 8 pipelines, and the SAME label maps to DIFFERENT stage ids per
+  pipeline — so **all logic keys on the canonical `stageKey(pipeline, dealstage)`**, never a bare id.
+  Only the Auto Pipeline (`1001348836`) is mapped; everything else → `other`. `sdr_deals` is pulled
+  scoped to tracked owners via **two passes** (`hubspot_owner_id` = AE, `sdr_owner` = SDR) unioned by id
+  (`pullChangedDeals`), then deal→company/contact resolved (`resolveDealAssociations`). Derived per owned
+  company: **demo-status** (`segmentation.ts` `segmentAccount` → Demo Pending / Scheduled / Done, +
+  at-risk/revive flags — the "furthest live deal" governs) and **Deal Health** (`deal-health.ts`
+  `classifyDealHealth` → green/yellow/red: terminal stages decide on stage alone, else a 14d→yellow /
+  30d→red recency ladder; a Demo-Scheduled deal whose demo date has passed → yellow). Both attach to
+  `RooftopDetail.deal` and feed `RepData.funnel`. All three (stage map, segmentation, health) are pure +
+  unit-tested (`deal-stages`/`segmentation`/`deal-health` tests).
 - **"Connected" is a business rule, not `hs_call_status`.** Only the 11 GUIDs in
   `config/dispositions.ts` `CONNECTED_DISPOSITIONS` count as reaching a human. Ported verbatim from
   `call-scoring-agent/config/dispositions.py`; keep in sync. `connect_rate` excludes null-disposition
@@ -161,18 +208,34 @@ new-vs-existing tapped rooftops/contacts.
 - **Sync degrades gracefully on 403** — `preflightCaps()` probes calls/emails independently, returns
   false only on a 403 scope error; the dropped type is recorded in the snapshot's `sources`. Emails
   need the `connected-email-data-access` scope.
-- **Change-feed sync is watermark-driven + idempotent** — per-type watermarks in `sdr_sync_state`;
-  each delta re-reads from `watermark − OVERLAP_MS` (5 min) and advances only after upserts +
-  re-aggregate succeed (all upserts PK-idempotent). One run at a time via an advisory lock (the
-  `lock` row), fenced by a lease token. Owner-moves-away are corrected by the nightly reconcile;
-  HubSpot deletions are not propagated (accepted gap).
+- **Change-feed sync is watermark-driven + idempotent** — per-type watermarks in `sdr_sync_state`
+  (`calls`/`emails`/`companies`/`deals`); each delta re-reads from `watermark − OVERLAP_MS` (5 min) and
+  advances only after upserts + re-aggregate succeed (all upserts PK-idempotent). One run at a time via
+  an advisory lock (the `lock` row), fenced by a lease token. Owner-moves-away are corrected by the
+  nightly reconcile; HubSpot deletions are not propagated (accepted gap).
+- **The delta cadence comes from a self-perpetuating heartbeat, NOT GitHub `schedule:`.** GitHub
+  throttles scheduled crons hard on public repos (measured: the `*/15` fired ~hourly with multi-hour
+  gaps). `spine-delta-heartbeat.yml` runs ONE long-lived job that loops `sync:delta` every ~15 min for
+  ~5h20m, then **re-dispatches itself** before the 6h cap (needs the `GH_DISPATCH_TOKEN` **Actions**
+  secret — a PAT with `actions:write`; `GITHUB_TOKEN` cannot trigger `workflow_dispatch`). `spine-delta.yml`
+  (`*/15`) stays as a fallback; the advisory lock makes overlap safe. Public repo = free unlimited Actions
+  minutes, so the sleeping loop costs nothing. Gotcha: GitHub resolves `secrets.*` at **job start**, so a
+  run already in flight when a secret is added sees it empty — test with a run dispatched *after*.
+- **Deals degrade gracefully before the V2 migration.** `persistDeals` swallows a missing-`sdr_deals`
+  error, `runDelta` reads the `deals` watermark defensively, and `loadStoreForAggregate` aggregates
+  without deals if the table is absent — so the sync keeps working until `supabase/sdr_schema.sql`
+  (the `sdr_deals` table + company `lifecycle_stage`/`last_activity_ms`/`rooftop_last_activity_ms`
+  columns + the `deals` sync_state seed) is applied. The client UI likewise tolerates a pre-V2 snapshot
+  with no `funnel`/`owner_kinds`.
 - **Secrets live only in `.env.local` / Vercel / GitHub secrets** — `HUBSPOT_PAT` (sync);
   `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` (auth) + `SUPABASE_SERVICE_ROLE_KEY`
   (spine + call-quality + agent, server-only); `OPENAI_API_KEY` (+ optional `OPENAI_MODEL`, default
   `gpt-4o-mini`) for the agent; `CRON_SECRET` (optional, `/api/sync/delta`); `BLOB_READ_WRITE_TOKEN`
   (optional Blob fallback). **In prod the middleware fails CLOSED (503) if the `NEXT_PUBLIC_SUPABASE_*`
-  vars are missing.** GitHub crons need repo secrets `HUBSPOT_PAT`, `SUPABASE_URL`,
-  `SUPABASE_SERVICE_ROLE_KEY`, and `OPENAI_API_KEY` (for the agent).
+  vars are missing.** GitHub crons need repo (Actions) secrets `HUBSPOT_PAT`, `SUPABASE_URL`,
+  `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` (agent), and **`GH_DISPATCH_TOKEN`** (a PAT with
+  `actions:write` — powers the heartbeat self-redispatch AND the admin add-user owner-pull dispatch;
+  also lives in Vercel env for the server-action path).
 - **Auth gate** — `middleware.ts` is the single source of truth (session + `@spyne.ai` via
   `lib/auth/domain.ts`); `PUBLIC_PATHS` exempts `/login`, `/auth`, `/api/sync/delta` (constant-time
   `CRON_SECRET` check). `/api/*` → JSON 401; pages → `/login`. Missing env = pass-through in dev, 503
@@ -190,16 +253,27 @@ new-vs-existing tapped rooftops/contacts.
   (`bg-surface`, `text-ink[-muted/-subtle]`, `border-line`, `text-primary`, `bg-hot/warm/cold` +
   `-weak`). Fonts via `next/font` (Hanken Grotesk UI + JetBrains Mono for metric values); icons via
   `lucide-react`. Primitives in `components/ui/index.tsx` (`Surface`, `StatTile`, `Chip`, `Bar`,
-  `Avatar`, `GradeBadge`, `SortHeader`, `TempBadge`, `cn`); shared chip/temp lookups in
+  `Avatar`, `GradeBadge`, `SortHeader`, `TempBadge`, **`Segmented`** (lifted here so Dashboard + Accounts
+  share it), **`DealHealthBadge`** (green/yellow/red pill), `cn`); shared chip/temp lookups in
   `components/ui-tokens.ts`. **Tailwind JIT gotcha:** dynamically-built classes like `text-${temp}`
-  are purged — keep a literal map (e.g. `TEMP_TEXT` in `Dashboard.tsx`).
-- **Main component** `components/Dashboard.tsx` (client); clicking a rep row opens `RepDrawer`
-  (children-based to avoid an import cycle) containing `Scorecard`. The **Book Explorer**
-  (`GdExplorer`) and "Accounts tapped this period" both render the shared nested table
-  `components/AccountsTable.tsx` (`UnitsTable` → `RooftopsTable` → `ContactsTable`). Temperature
-  tiles + meeting/hot chips are clickable → filter the accounts table. The **monthly** card has a
-  month picker (This/Last/2-months-ago); a true arbitrary-day date range is NOT implemented (would
-  need a Postgres range function).
+  are purged — keep a literal map (e.g. `TEMP_TEXT` in `Dashboard.tsx`, `FUNNEL_TINT` in the funnel strip).
+- **Shared nav** `components/AppNav.tsx` (Overview · Accounts · Attention · Admin; Admin only when
+  `viewer.isAdmin`) sits atop each authenticated page. `viewer.kind` (SDR/AE, resolved in
+  `lib/access/resolve.ts`, kept off the pure `decideScope`) defaults the Accounts lens.
+- **Overview** `components/Dashboard.tsx` (client): rep table + a **Demo funnel strip** (`FunnelStrip`
+  from `RepData.funnel`, links into `/accounts`) + an **SDR/AE toggle** (managers/admins only —
+  `viewer.isAdmin || role manager|leadership` — filters reps via `snapshot.owner_kinds`). Clicking a rep
+  row opens `RepDrawer` (children-based to avoid an import cycle) containing `Scorecard`. **Guard** reads
+  of `RepData.funnel` / `owner_kinds` — absent on a pre-V2 snapshot.
+- **Accounts** `components/Accounts.tsx` (client, `/accounts`): owned book by demo-status
+  (Pending/Scheduled/Done tabs from `funnel`), per-rep **lazy-loaded** units via `/api/rep/[ownerId]/book`,
+  grouped GD→rooftop with `DealHealthBadge`/`TempBadge` + demo-status chip + last-activity, expandable to
+  contacts. **AE view currently reuses the owned-book buckets** — a true deal-owner ("In Discussion")
+  cross-cut needs a deal-owner rollup in the aggregator (follow-up).
+- **Reused table** `components/AccountsTable.tsx` (`UnitsTable` → `RooftopsTable` → `ContactsTable`) still
+  backs the **Book Explorer** (`GdExplorer`) and "Accounts tapped this period". Temperature tiles +
+  meeting/hot chips are clickable → filter the accounts table. The **monthly** card has a month picker
+  (This/Last/2-months-ago); a true arbitrary-day date range is NOT implemented (needs a Postgres range fn).
 - **Charts are hand-built** (no charting library): CSS donut/bars + an interactive SVG-ish daily
   chart (hover tooltip, gridlines, axis labels). State is local (`useState`/`useMemo`); no store.
 - **HubSpot deep-links** — `config/hubspot.ts`: `companyUrl` (0-2), `contactUrl` (0-1), `dealUrl`
@@ -215,20 +289,27 @@ new-vs-existing tapped rooftops/contacts.
   strict JSON verdict), `context.ts`, `openai.ts` (`reason()`, JSON-validated), `store.ts`
   (`sdr_agent_watches`/`sdr_agent_notes`/`sdr_activity_content`), `runner.ts` (`runAgent`, caps ~25
   accounts/run). Model `OPENAI_MODEL` (default `gpt-4o-mini`).
-- **Surface:** `/attention` (`AttentionBoard`, priority/rep filters, HubSpot backlinks) +
-  `/api/agent/watches`.
+- **Surface:** `/attention` renders **`AttentionBoardEnhanced`** (smart ranking via `lib/agent/ranking`
+  + action tracking; the simpler `AttentionBoard` is the earlier version) — priority/rep filters,
+  HubSpot backlinks + `/api/agent/watches`.
 - **Activation (one-time):** apply `supabase/sdr_schema.sql` (adds `sdr_activity_content`,
   `sdr_agent_watches`, `sdr_agent_notes`, and the `sdr_save_snapshot` RPC) + set the `OPENAI_API_KEY`
   secret. The `spine-agent` cron then runs every 2 h.
 
 ## Derived-metric definitions (`lib/sync/aggregate.ts` unless noted)
 
-- **Temperature** — see the conventions bullet + `lib/sync/temperature.ts`.
+- **Temperature** / **Deal Health** — see the temperature + deals conventions above + `lib/sync/temperature.ts`
+  / `lib/sync/deal-health.ts`. Two-indicator: Deal Health for accounts with a live deal, Temperature otherwise.
+- **Demo-status segmentation** (`lib/sync/segmentation.ts` `segmentAccount`): per owned company from its
+  deals' canonical stage keys → Demo Pending (no live deal past Discovery) / Scheduled (meeting booked, +
+  at-risk on no-show/reschedule) / Done (demo happened → won); the furthest live deal governs; terminal-only
+  deals flag `has_revivable`. `RepData.funnel` counts owned rooftops per bucket.
 - **Quality score** (`computeQuality`): weighted 0–100 → A–F, from five sub-scores (conversations,
   depth, persistence, channel balance, deliverability).
-- **Coverage** (`computeBookCoverage` → `RepData.book`): cumulative, monotonic, owner-attributed;
-  owned rooftops rolled up to GD/Single units (group = `is_this_is_a_part_of_group_dealership_` AND a
-  `gd_id`, else single). Segmented by GD-level lifecycle (`lifecycle_stage_gd_level` →
+- **Coverage** (`computeBookCoverage` → `RepData.book`): owner-attributed, **owner-recency 3-state**
+  (`CoverageStatus`: `tapped` = owner worked it ≤60d / `worked_by_other` / `untapped`; GDs flag
+  `mixed_owner`) — see the coverage convention above. Owned rooftops roll up to GD/Single units by
+  **group association** (`unitKeyFor`). Segmented by GD-level lifecycle (`lifecycle_stage_gd_level` →
   `normalizeGdStage`), market segment, dealership type. Measured over the `COVERAGE_ANCHOR` pull.
 - **Monthly new-unique** (`RepData.monthly`): per-account/per-contact first-tap tracked over all
   history; "new in month M" = first ever worked in M. Owned-book scoped.
@@ -238,10 +319,12 @@ new-vs-existing tapped rooftops/contacts.
 
 - **First-time setup:** apply `supabase/sdr_schema.sql`, run `npm run verify:schema`, then
   `npm run team:seed` (config → DB roster) and `npm run sync:backfill` once (~35–40 min).
-- **Steady state:** `spine-delta.yml` every 15 min, `spine-reconcile.yml` nightly (06:30 UTC),
-  `spine-agent.yml` every 2 h. The delta writes `sdr_snapshots`; the deployed app reads it live (no
-  redeploy needed). Add/remove/re-team people in the **admin control center** (`/admin`) — it writes
-  the DB roster and auto-fires a targeted pull for new reps; no code change or redeploy needed.
+- **Steady state:** the delta runs ~every 15 min via the **self-perpetuating `spine-delta-heartbeat.yml`**
+  (self-redispatching loop; `spine-delta.yml` `*/15` is the fallback) — see the sync convention. Reconcile
+  nightly (`spine-reconcile.yml`, 06:30 UTC), agent every 2 h (`spine-agent.yml`). The delta writes
+  `sdr_snapshots`; the deployed app reads it live (no redeploy needed). Add/remove/re-team people in the
+  **admin control center** (`/admin`) — it writes the DB roster and auto-fires a targeted pull for new
+  reps; no code change or redeploy needed.
 - **Recovery:** `npm run sync:reaggregate` rebuilds the snapshot from the spine (no HubSpot) — use
   after an aggregate change or a `saveSnapshot` timeout.
 - **Manual trigger:** `workflow_dispatch` on any workflow, or `GET /api/sync/delta` with
