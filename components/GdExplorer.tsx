@@ -13,7 +13,7 @@ import { UnitsTable } from "./AccountsTable";
 
 const fmt = (n: number) => n.toLocaleString("en-IN");
 
-type Filter = "all" | "gds" | "singles" | "untapped";
+type Filter = "all" | "gds" | "singles" | "worked_by_other" | "untapped";
 
 export default function GdExplorer({ ownerId, book }: { ownerId: string; book: BookCoverage }) {
   const [units, setUnits] = useState<BookUnitDetail[] | null>(null);
@@ -33,15 +33,19 @@ export default function GdExplorer({ ownerId, book }: { ownerId: string; book: B
     const all = units ?? [];
     if (filter === "gds") return all.filter((u) => u.isGroup);
     if (filter === "singles") return all.filter((u) => !u.isGroup);
-    if (filter === "untapped") return all.filter((u) => !u.tapped);
+    if (filter === "worked_by_other") return all.filter((u) => u.coverage === "worked_by_other");
+    if (filter === "untapped") return all.filter((u) => u.coverage === "untapped");
     return all;
   }, [units, filter]);
 
+  // Coverage is a 3-way split on the 60-day owner window: tapped / worked-by-others / untapped.
+  const untapped = Math.max(0, book.units_total - book.units_tapped - book.units_worked_by_other);
   const tabs: { key: Filter; label: string }[] = [
     { key: "all", label: `All ${fmt(book.units_total)}` },
     { key: "gds", label: `GDs ${fmt(book.gds)}` },
     { key: "singles", label: `Singles ${fmt(book.singles)}` },
-    { key: "untapped", label: `Untapped ${fmt(Math.max(0, book.units_total - book.units_tapped))}` },
+    { key: "worked_by_other", label: `Worked by others ${fmt(book.units_worked_by_other)}` },
+    { key: "untapped", label: `Untapped ${fmt(untapped)}` },
   ];
 
   return (
