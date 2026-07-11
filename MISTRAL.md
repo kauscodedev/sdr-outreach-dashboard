@@ -4,6 +4,14 @@
 
 This file provides context about the SDR Outreach Dashboard project, focusing on the **Enhanced Attention Board** feature that was recently shipped. It explains the architecture, key decisions, and implementation patterns to help both AI assistants and human developers understand and extend the codebase.
 
+> **Source of truth:** for the full architecture, data model, and cross-cutting conventions, see
+> [`CLAUDE.md`](./CLAUDE.md) — the canonical, up-to-date agent guide. This file is scoped to the
+> **Attention Board** feature. The app is now on **V2** (renamed **TrackerAI**): HubSpot **deals**,
+> **Deal Health** (green/yellow/red), and a **demo-status funnel** (Demo Pending / Scheduled / Done)
+> now sit alongside hot/warm/cold temperature, and the tracked roster is **DB-backed** (`sdr_roster`,
+> admin-editable) rather than a hard-coded config list. Read the temperature/coverage notes below as
+> one part of that larger picture.
+
 ---
 
 ## 📦 What Was Shipped: Enhanced Attention Board
@@ -581,7 +589,7 @@ mv components/AttentionBoardEnhanced.tsx components/AttentionBoard.tsx
 │       └── ...
 │
 ├── config/                # Configuration files
-│   ├── reps.ts             # Rep mappings
+│   ├── reps.ts             # Rep seed/fallback — the DB roster (sdr_roster) is authoritative
 │   ├── dispositions.ts     # HubSpot disposition mappings
 │   └── hubspot.ts          # HubSpot configuration
 │

@@ -2,13 +2,14 @@
 
 **TrackerAI** — the SDR & AE account-tracking sales cockpit (formerly the SDR Outreach Coverage
 Dashboard), gated behind **Google SSO (@spyne.ai only)**.
-Tracks **outbound** outreach by a fixed set of SDRs from HubSpot — unique contacts/companies
-tapped, engagement depth, call-outcome + email breakdowns — across US/Eastern time windows
-(Today / Yesterday / Last 3 days / This week / Last week / This month), plus:
+Tracks **outbound** outreach by a DB-backed, admin-editable roster of SDRs & AEs from HubSpot —
+unique contacts/companies tapped, engagement depth, call-outcome + email breakdowns — across
+US/Eastern time windows (Today / Yesterday / Last 3 days / This week / Last week / This month), plus:
 
 - **GD Book Explorer** (per rep): assigned Group-Dealership / Single units → rooftops engaged
-  within each GD → who was engaged (top contacts) → activity depth + last touch. Cumulative and
-  reconciled with book coverage by construction.
+  within each GD → who was engaged (top contacts) → activity depth + last touch. An all-history
+  engagement view over the same GD → rooftop → contact units that back the Accounts page and the
+  coverage rollup.
 - **Call quality** (read-only from the call-scoring pipeline's Supabase): per-connected-call
   BANTIC scores + drill-down, weekly coaching snapshots, Call Q column in the rep table.
 - **Deals + demo funnel (V2)**: HubSpot deals (Auto Pipeline) segment every owned company into
@@ -18,17 +19,19 @@ tapped, engagement depth, call-outcome + email breakdowns — across US/Eastern 
   accounts without one keep hot/warm/cold temperature.
 - **Accounts page (V2)** (`/accounts`): the owned book by demo-status, drilling GD → rooftop → contact
   with Deal Health / temperature + last-activity per rooftop.
+- **Attention board (V2)** (`/attention`): a read-only OpenAI copilot watches hot accounts and produces
+  a grounded "why hot + next step" task list, with smart ranking + action tracking.
 
 Built to answer: **are all accounts being tapped — and how well are we working them, from lead to demo to close?**
 
 ## Architecture
 
 ```
-spine-delta (cron, every 15 min) ──▶ HubSpot (changed calls/emails/companies since watermark)
+spine-delta (heartbeat, ~15 min) ──▶ HubSpot (changed calls/emails/companies/deals since watermark)
        │  runBackfill once, then O(changes) deltas + nightly reconcile
        ▼
   Postgres spine  (sdr_* tables in the call-scoring Supabase — beside, never touching, its tables)
-       │  runner re-runs the unchanged aggregate() over the spine → one jsonb snapshot row
+       │  runner re-runs aggregate() over the spine → one gzip-compressed jsonb snapshot row
        ▼
   Next.js app ── middleware auth gate (Supabase Google SSO, @spyne.ai) ── /login
        │  page load: snapshot row (book units stripped) + resolveViewer() default scope + coaching  ▲
@@ -40,7 +43,8 @@ spine-delta (cron, every 15 min) ──▶ HubSpot (changed calls/emails/compani
 
 The sync runs **outside** Vercel (GitHub Actions cron, or locally) because it can exceed
 serverless time limits. The web app never calls HubSpot at request time;
-call-quality data is read live from Supabase per request.
+call-quality data is read live from Supabase per request. A separate read-only hot-account
+**agent** (`spine-agent`, every 2 h) reasons over the snapshot and powers the `/attention` task list.
 
 ## Key definitions
 
@@ -51,19 +55,22 @@ call-quality data is read live from Supabase per request.
   connected** (matches the call-scoring pipeline's `is_connected()`).
 - **Unique company per activity:** primary company of each associated contact; if an
   activity has no contact, a direct engagement→company association; else unattributed.
-- **Book coverage (cumulative):** of the accounts a rep owns, how many they have *ever* tapped —
-  rolled up to Group-Dealership / Single units (rooftops grouped by `gd_id`; a GD is tapped if any
-  owned rooftop is). Monotonic, and segmented by lifecycle stage, franchise/independent, and market
-  segment. Measured back to `COVERAGE_ANCHOR` (`config/hubspot.ts`), which widens the activity pull.
+- **Book coverage (owner-recency, 3-state):** of the accounts a rep owns, `CoverageStatus` is
+  `tapped` (the **owner** worked the rooftop within 60d) / `worked_by_other` (only a *different*
+  tracked rep did) / `untapped` — rolled up to Group-Dealership / Single units (rooftops grouped by
+  `gd_id`; a GD is `tapped` if any owned rooftop is owner-recent, and flags `mixed_owner` when its
+  rooftops span >1 owner). Segmented by lifecycle stage, franchise/independent, and market segment.
+  Measured back to `COVERAGE_ANCHOR` (`config/hubspot.ts`), which widens the activity pull.
 
 ## Setup
 
 ```bash
 npm install
-cp .env.local.example .env.local   # add HUBSPOT_PAT + the three Supabase vars
+cp .env.local.example .env.local   # add HUBSPOT_PAT + the three Supabase vars (+ OPENAI_API_KEY for the agent)
 # one-time: paste supabase/sdr_schema.sql into the Supabase SQL editor, then:
 npm run verify:schema              # confirm the sdr_* tables + RLS floor are in place
-npm run sync:backfill              # populate the Postgres spine (~1 h)
+npm run team:seed                  # seed the DB roster (sdr_roster/pods/managers) from config
+npm run sync:backfill              # populate the Postgres spine (~35–40 min)
 npm run dev                        # http://localhost:3000
 ```
 
@@ -82,12 +89,17 @@ runs ungated with the spine/call-quality disabled; **production fails closed (50
 | Command | What it does |
 |---|---|
 | `npm run verify:schema` | Check the `sdr_*` schema is applied (tables, seeds, anon blocked) |
-| `npm run sync:backfill` | One-time full pull into the Postgres spine |
-| `npm run sync:delta` | Incremental change-feed sync (what the 15-min cron runs) |
-| `npm run sync:reconcile` | Nightly drift heal (full book + 7-day activity re-pull) |
+| `npm run team:seed` | Seed the DB roster (`sdr_roster`/`sdr_pods`/`sdr_managers`) from `config/*.ts` |
+| `npm run sync:backfill` | One-time full pull into the Postgres spine (~35–40 min) |
+| `npm run sync:delta` | Incremental change-feed sync (driven by the self-perpetuating delta heartbeat) |
+| `npm run sync:reconcile` | Nightly drift heal (full owned-book + 7-day activity re-pull) |
+| `npm run sync:reaggregate` | Rebuild the snapshot from the spine, no HubSpot pull (recovery) |
+| `npm run pull:owner` | Targeted full-history pull for ONE owner (`OWNER_ID=… npm run pull:owner`) |
+| `npm run agent:run` | One hot-account agent pass (needs `OPENAI_API_KEY`) |
+| `npm run content:backfill` | Opt-in: pull call notes/transcripts/email subjects |
 | `npm run dev` | Run the dashboard locally |
 | `npm run build` | Production build (also typechecks) |
-| `npm test` | Unit tests for US/Eastern bucketing (incl. DST) + aggregation + access scope |
+| `npm test` | All Vitest unit tests (bucketing incl. DST, aggregation, temperature, deals, access, …) |
 
 ## Deploy (Vercel)
 
@@ -103,7 +115,9 @@ runs ungated with the spine/call-quality disabled; **production fails closed (50
 4. Apply `supabase/sdr_schema.sql` (SQL editor) and confirm with `npm run verify:schema`. Verify
    `anon` cannot read the `sdr_*` tables or the call-scoring tables — the anon key ships to browsers.
 5. Add GitHub **repo secrets** for the sync crons: `HUBSPOT_PAT`, `SUPABASE_URL` (= the
-   `NEXT_PUBLIC_SUPABASE_URL` value), `SUPABASE_SERVICE_ROLE_KEY`.
+   `NEXT_PUBLIC_SUPABASE_URL` value), `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` (the hot-account
+   agent), and `GH_DISPATCH_TOKEN` (a PAT with `actions:write` — powers the delta heartbeat's
+   self-redispatch and the admin add-user owner-pull).
 6. Deploy, then run `npm run sync:backfill` once. The dashboard reads the `sdr_snapshots` row live;
    call-quality data is read live from Supabase per request.
 
@@ -111,11 +125,15 @@ runs ungated with the spine/call-quality disabled; **production fails closed (50
 
 Fully automated into Postgres — no more commit-the-snapshot.
 
-- **Steady state:** `spine-delta.yml` runs every 15 min; `spine-reconcile.yml` nightly. New data
-  appears in the deployed app with no redeploy (it reads the `sdr_snapshots` row live).
+- **Steady state:** the delta runs ~every 15 min via the self-perpetuating `spine-delta-heartbeat.yml`
+  (a long-lived job that loops `sync:delta` and re-dispatches itself — GitHub throttles scheduled crons
+  on public repos; `spine-delta.yml` `*/15` stays as a fallback). `spine-reconcile.yml` runs nightly;
+  the hot-account agent (`spine-agent.yml`) every 2 h → `/attention`. New data appears in the deployed
+  app with no redeploy (it reads the `sdr_snapshots` row live).
 - **Manual:** Actions tab → *Spine delta sync* / *Spine reconcile* → **Run workflow**; or
   `GET /api/sync/delta` with `Authorization: Bearer $CRON_SECRET`; or `npm run sync:delta` locally.
-- **Recovery:** if the spine is ever wiped, re-run `npm run sync:backfill`.
+- **Recovery:** `npm run sync:reaggregate` rebuilds the snapshot from the spine (no HubSpot pull); if
+  the spine itself is ever wiped, re-run `npm run sync:backfill`.
 
 ## Security
 

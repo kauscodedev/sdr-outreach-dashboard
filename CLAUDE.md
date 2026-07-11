@@ -52,14 +52,21 @@ All non-`dev`/`build`/`lint`/`test` scripts run via `tsx --conditions=react-serv
 the `server-only` guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node. Scripts
 load env from `.env` then `.env.local` (so put local secrets, incl. `OPENAI_API_KEY`, in `.env.local`).
 
+**No CI gate.** All six `.github/workflows/*` are cron/manual data-sync jobs — none run on `push`
+or `pull_request`, so `lint`/`test`/`build` are **not** enforced in CI. Run `npm run build` (typecheck),
+`npm test`, and `npm run lint` locally before pushing.
+
 Run a **single test**: `npx vitest run tests/temperature.test.ts` (add `-t "name"` to filter by
 test name; drop `run` for watch mode). Tests (`tests/`) cover only pure logic: US/Eastern bucketing
 (`buckets.test.ts`, incl. DST cases), aggregation incl. GD book units + owner≠doer + monthly + deal
-integration (`aggregate.test.ts`), the temperature classifier (`temperature.test.ts`), the canonical
-deal-stage engine incl. the pipeline-collision guard (`deal-stages.test.ts`), demo-status segmentation
-(`segmentation.test.ts`), Deal Health (`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`),
-spine row mappers incl. deal mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`),
-the agent detector (`agent-detect.test.ts`), and the auth-domain rule (`auth-domain.test.ts`). Never
+integration (`aggregate.test.ts`, plus GD-grouping edge cases in `aggregate-gd-grouping.test.ts`),
+activity/deal→company association (`associate.test.ts`), the temperature classifier
+(`temperature.test.ts`), the canonical deal-stage engine incl. the pipeline-collision guard
+(`deal-stages.test.ts`), demo-status segmentation (`segmentation.test.ts`), Deal Health
+(`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`), spine row mappers incl. deal
+mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the agent detector
+(`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
+(`agent-ranking.test.ts`), and the auth-domain rule (`auth-domain.test.ts`) — 15 files in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
