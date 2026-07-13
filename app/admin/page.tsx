@@ -5,6 +5,7 @@ import { resolveViewer } from "../../lib/access/resolve";
 import { loadTeamStructure } from "../../lib/team/load";
 import { setUserActive, savePod, removePod, saveManager, removeManager, addRole, removeRole } from "./actions";
 import { AddUserForm } from "../../components/admin/AddUserForm";
+import IntegrityQueue from "../../components/admin/IntegrityQueue";
 
 export const dynamic = "force-dynamic";
 
@@ -162,6 +163,17 @@ export default async function AdminPage() {
           <input name="team_id" placeholder="team id (manager only)" className={inputCls} />
           <button className={btnCls}>Add / update role</button>
         </form>
+      </section>
+
+      {/* ── Data integrity (read-only triage queue) ───────────────────── */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-slate-500">Data integrity</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          Read-only checks over the deal spine: active deals with no company (invisible to the funnel),
+          demos whose date slipped, deals stuck 30d+, deal-vs-account owner mismatches, and backward
+          stage moves. Fix in HubSpot via the links — the next sync picks changes up automatically.
+        </p>
+        <IntegrityQueue />
       </section>
 
       {/* ── Sync health ───────────────────────────────────────────────── */}

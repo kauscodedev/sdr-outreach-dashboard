@@ -15,6 +15,7 @@ import { loadTeamStructure } from "../../../lib/team/load";
 import { trackedOwnerIds, nameMap } from "../../../lib/team/helpers";
 import { classifyDealHealth } from "../../../lib/sync/deal-health";
 import { demoScheduledMs, demoCompletedMs } from "../../../lib/sync/aggregate";
+import { computeForecast } from "../../../lib/sync/forecast";
 import { FUNNEL_STAGES, stageLabel, stageOrder, isLost, isWon } from "../../../config/deal-stages";
 import { Deal } from "../../../lib/sync/types";
 import { DealListItem } from "../../../lib/sync/deal-funnel";
@@ -132,6 +133,7 @@ export async function GET(req: NextRequest) {
     lens,
     total: deals.length,
     funnel: { stages, lost, flow },
+    forecast: computeForecast(deals), // resolved-cohort conversion + velocity + expected value
     deals: items,
     list_cap: LIST_CAP,
   });

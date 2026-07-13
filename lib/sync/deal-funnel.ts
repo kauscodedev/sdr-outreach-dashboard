@@ -1,6 +1,7 @@
 /** Shared contract for the /api/deals route ↔ the Accounts page's Deal Funnel view. Pure types. */
 import { DealStageKey } from "../../config/deal-stages";
 import { DealHealth } from "./deal-health";
+import { Forecast } from "./forecast";
 
 export interface DealListItem {
   id: string;
@@ -31,4 +32,5 @@ export interface DealFunnelPayload {
   };
   deals: DealListItem[]; // up to list_cap per stage bucket, longest-in-stage first
   list_cap: number;
+  forecast: Forecast; // resolved-cohort conversion, stage velocity, expected pipeline value
 }

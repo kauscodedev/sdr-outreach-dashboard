@@ -8,7 +8,11 @@
  *   npm run content:backfill
  * Needs HUBSPOT_PAT + SUPABASE_SERVICE_ROLE_KEY (+ NEXT_PUBLIC_SUPABASE_URL) in the env.
  */
-import "dotenv/config";
+// Load .env.local first (local secrets), then .env — same order as the other spine scripts.
+import { config } from "dotenv";
+config({ path: ".env.local" });
+config();
+
 import { hubspotPost, delay, RATE_LIMIT_DELAY_MS } from "../lib/hubspot/client";
 import { supabaseAdmin } from "../lib/supabase/admin";
 
@@ -25,9 +29,16 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
   const db = supabaseAdmin();
   if (!db) throw new Error("Supabase service role not configured");
   const sinceMs = Date.now() - LOOKBACK_MS;
-  const { data, error } = await db.from("sdr_activities").select("hs_id").eq("type", type).gte("ts_ms", sinceMs);
-  if (error) throw new Error(`load ${type} ids: ${error.message}`);
-  const ids = (data ?? []).map((a: { hs_id: string }) => a.hs_id);
+  // Paginated id read — a bare select is capped at PostgREST max-rows (1000), which silently
+  // truncated the backfill to 1000 activities per type.
+  const ids: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from("sdr_activities").select("hs_id")
+      .eq("type", type).gte("ts_ms", sinceMs).order("hs_id").range(from, from + 999);
+    if (error) throw new Error(`load ${type} ids: ${error.message}`);
+    ids.push(...(data ?? []).map((a: { hs_id: string }) => a.hs_id));
+    if (!data || data.length < 1000) break;
+  }
   console.log(`[content] ${type}: ${ids.length} activities to read`);
 
   let upserted = 0;

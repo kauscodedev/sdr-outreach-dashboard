@@ -10,8 +10,9 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, ExternalLink, History, ChevronRight } from "lucide-react";
-import { DealStageKey, stageOrder } from "../config/deal-stages";
+import { DealStageKey, stageOrder, stageLabel } from "../config/deal-stages";
 import { DealFunnelPayload, DealListItem } from "../lib/sync/deal-funnel";
+import { Forecast } from "../lib/sync/forecast";
 import { companyUrl, dealUrl } from "../config/hubspot";
 import { Surface, SortHeader, DealHealthBadge, cn } from "./ui";
 
@@ -179,6 +180,8 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
         </div>
       </Surface>
 
+      <ForecastCard f={data.forecast} />
+
       {/* Deal workbench */}
       <Surface className="overflow-hidden">
         <div className="flex items-center justify-between border-b border-line bg-surface-muted/60 px-4 py-2">
@@ -246,5 +249,56 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
         )}
       </Surface>
     </div>
+  );
+}
+
+/** Forecast v1 (blueprint §7.4): resolved-cohort conversion per stage, stage velocity, and the
+ *  conversion-weighted expected value of the open pipeline. Honest about coverage — stages with
+ *  thin cohorts show no rate, deals without amounts aren't imputed. */
+function ForecastCard({ f }: { f?: Forecast }) {
+  if (!f) return null;
+  const ACTIVE_STAGES: DealStageKey[] = [
+    "mql", "discovery_done", "demo_no_show", "demo_rescheduled",
+    "demo_done", "demo_accepted", "in_discussion", "contract_initiated",
+  ];
+  const chips = ACTIVE_STAGES
+    .map((k) => ({ k, s: f.by_stage[k] }))
+    .filter((x) => x.s && (x.s.conversion != null || x.s.median_days != null));
+  const hasSignal = f.expected_value > 0 || chips.length > 0;
+  return (
+    <Surface className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-subtle">Forecast · historical conversion (resolved cohorts)</div>
+          {f.expected_value > 0 ? (
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="font-mono text-2xl font-bold tabular-nums text-good">{usd(f.expected_value)}</span>
+              <span className="text-xs text-ink-muted">expected from {usd(f.pipeline_amount)} open pipeline</span>
+            </div>
+          ) : (
+            <p className="mt-1 text-sm text-ink-subtle">
+              {hasSignal ? "Open deals in this scope carry no amounts — expected value unavailable." : "Not enough resolved history in this scope for conversion rates."}
+            </p>
+          )}
+          <div className="mt-0.5 text-[11px] tabular-nums text-ink-subtle">
+            {fmt(f.active_with_amount)}/{fmt(f.active_total)} active deals carry an amount · win = closed or transferred to CS
+          </div>
+        </div>
+        {chips.length > 0 && (
+          <div className="flex max-w-[560px] flex-wrap justify-end gap-1.5">
+            {chips.map(({ k, s }) => (
+              <span key={k} className="rounded-full bg-surface-muted px-2 py-1 text-[10.5px] font-medium tabular-nums text-ink-muted"
+                title={`${s!.won}/${s!.resolved} resolved deals that entered ${stageLabel(k)} went on to win${s!.median_days != null ? ` · median ${Math.round(s!.median_days)}d in stage` : ""}`}>
+                {stageLabel(k)}{" "}
+                <b className={cn(s!.conversion != null && s!.conversion >= 0.5 ? "text-good" : "text-ink")}>
+                  {s!.conversion != null ? `${Math.round(s!.conversion * 100)}%` : "—"}
+                </b>
+                {s!.median_days != null && <span className="text-ink-subtle"> · ~{Math.round(s!.median_days)}d</span>}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </Surface>
   );
 }

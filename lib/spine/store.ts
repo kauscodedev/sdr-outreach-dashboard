@@ -222,6 +222,13 @@ export async function loadActivitiesBetween(fromMs: number, toMs: number, ownerI
   return rows.map(rowToActivity);
 }
 
+/** id → { name, owner_id } for every company — the integrity checks' account lookup. */
+export async function loadCompanyRefs(): Promise<Map<string, { name: string | null; owner_id: string | null }>> {
+  const rows = await fetchAllParallel<{ hs_id: string; name: string | null; owner_id: string | null }>(
+    "sdr_companies", "hs_id,name,owner_id", ["hs_id"]);
+  return new Map(rows.map((r) => [String(r.hs_id), { name: r.name, owner_id: r.owner_id }]));
+}
+
 /** Contact meta for a specific id set (chunked .in reads) — range DM-reach without a full scan. */
 export async function loadContactMetaFor(ids: string[]): Promise<Record<string, ContactMeta>> {
   const out: Record<string, ContactMeta> = {};
