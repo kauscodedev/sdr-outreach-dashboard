@@ -116,7 +116,12 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
                           contains on company_ids — needs the JSON-string form + the GIN index) +
                           deal journeys from the stage-event ledger + agent watch; pure assembly in
                           lib/sync/account-timeline.ts → components/AccountTimeline.tsx (History
-                          button on each Accounts rooftop row)
+                          button on each Accounts rooftop row + Deal Funnel row)
+  app/api/deals   the Deal Funnel workbench (V3): stage-wise counts + $ per canonical stage +
+                          merged Lost block, ledger flow conversion (scheduled→completed→contract→won),
+                          and up to 100 deals/stage in ONE response (client stage-clicks don't refetch);
+                          lens=sdr|ae|all picks the crediting owner field; contract in
+                          lib/sync/deal-funnel.ts → components/DealFunnel.tsx
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
 
 scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)
@@ -211,6 +216,14 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   (fed from association reads already on the delta path — no extra HubSpot calls). Both new tables
   degrade gracefully pre-migration (own try/catch; the loader falls back), and the nightly
   reconcile's full deal re-pull backfills the ledger once the schema is applied.
+  **Orphan-deal heal:** ~44% of Auto-Pipeline deals have NO company association in HubSpot and
+  used to vanish from demo-status/funnel/health — `resolveDealAssociations` now falls back to the
+  first associated contact's primary company (`fallbackCompanyFor`, pure + tested).
+- **Reconcile MUST retry lock contention.** The advisory lock is usually held by a ~15-min delta
+  heartbeat run, so a single `runReconcile` attempt frequently no-ops while the workflow still
+  reports success (observed repeatedly: 30-second "successful" reconciles that did nothing).
+  `runReconcile` returns `{ ran }` and `scripts/spine-reconcile.ts` retries (2-min × 15) until it
+  actually runs. Treat any suspiciously fast reconcile as a silent no-op.
 - **"Connected" is a business rule, not `hs_call_status`.** Only the 11 GUIDs in
   `config/dispositions.ts` `CONNECTED_DISPOSITIONS` count as reaching a human. Ported verbatim from
   `call-scoring-agent/config/dispositions.py`; keep in sync. `connect_rate` excludes null-disposition
@@ -308,12 +321,18 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   Overview + Accounts both), a **from–to date-range picker** (swaps the table/tiles to
   `/api/metrics/range` results; period chips deselect), a sortable **Demos** column + per-rep
   **Funnel** cells deep-linking to `/accounts?lens&bucket&rep`, and a **PipelineCard** in the drawer.
-- **Accounts** `components/Accounts.tsx` (client, `/accounts`): owned book by demo-status
-  (Pending/Scheduled/Done tabs from `funnel`), per-rep **lazy-loaded** units via `/api/rep/[ownerId]/book`,
-  grouped GD→rooftop with `DealHealthBadge`/`TempBadge` + demo-status chip + last-activity, expandable to
-  contacts. **V3:** pod/team dropdown (narrows the rep picker), column filters (Health incl. a
-  "no deal — Temp governs" bucket, Temp, GD Stage, Segment), and a `rep` deep-link param; the
-  drawer's Book Explorer (`GdExplorer`) gains matching Stage/Segment/Temp selects. **AE view currently reuses the owned-book buckets** — a true deal-owner ("In Discussion")
+- **Deals & Accounts** `components/Accounts.tsx` (client, `/accounts`) — the deal-funnel page, two
+  views (**Funnel | Book** toggle; URL `bucket` deep-links land on Book, `view=` overrides):
+  **Funnel** (`components/DealFunnel.tsx` ← `/api/deals`) renders three lanes (Lead→Demo SDR motion,
+  Demo→Closure AE motion, Closed) + Parked/Lost blocks, the ledger flow-conversion line, and a
+  sortable deal workbench (longest-in-stage first; 14d/30d heat on days-in-stage; HubSpot deal +
+  company backlinks; History panel per row). Works across ANY scope — the rep select has an
+  **"All reps"** option (`""`), so team filter + rep select no longer conflict; Funnel scope =
+  rep > team > viewer scope. **Book** is per-rep (prompts if All-reps): GD cards **collapsed by
+  default** with a summary row (sched/done/hot + rooftop count; filters auto-expand), rooftop rows
+  in a 5-column grid (Account · Demo status · Health/Temp · Deal stage · Last activity), demo-status
+  tabs + column filters (Health incl. "no deal — Temp governs", Temp, GD Stage, Segment), contacts
+  expandable. The drawer's Book Explorer (`GdExplorer`) keeps matching Stage/Segment/Temp selects. **AE view currently reuses the owned-book buckets** — a true deal-owner ("In Discussion")
   cross-cut needs a deal-owner rollup in the aggregator (follow-up).
 - **Reused table** `components/AccountsTable.tsx` (`UnitsTable` → `RooftopsTable` → `ContactsTable`) still
   backs the **Book Explorer** (`GdExplorer`) and "Accounts tapped this period". Temperature tiles +
