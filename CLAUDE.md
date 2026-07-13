@@ -47,6 +47,7 @@ non-obvious conventions that span multiple files.
 | `npm run pull:owner` | Targeted full-history pull for ONE owner (`OWNER_ID=… npm run pull:owner`). Used by the admin add-user auto-pull (`spine-pull-owner.yml`) |
 | `npm run content:backfill` | **Opt-in** pull of call notes/transcripts/email subjects → `sdr_activity_content` (kept OFF the delta path) |
 | `npm run agent:run` | One hot-account agent pass (OpenAI reasoning → `sdr_agent_watches`); needs `OPENAI_API_KEY` |
+| `npm run agent:briefs` | Refresh grounded Account Briefs for watched accounts (timeline + content + deals → `sdr_agent_briefs`); needs `OPENAI_API_KEY`; runs as the 2nd step of `spine-agent.yml` |
 
 All non-`dev`/`build`/`lint`/`test` scripts run via `tsx --conditions=react-server` — required so
 the `server-only` guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node. Scripts
@@ -359,9 +360,16 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   content from `sdr_activity_content` (present only after `content:backfill`; degrades gracefully).
 - **Pieces:** `detect.ts` (pure `detectWatchWork` — newly-hot / stale / intent-shift → review;
   quiet cooled watches → drop-off; unit-tested), `prompt.ts` (`SYSTEM_PROMPT` — grounded, read-only,
-  strict JSON verdict), `context.ts`, `openai.ts` (`reason()`, JSON-validated), `store.ts`
-  (`sdr_agent_watches`/`sdr_agent_notes`/`sdr_activity_content`), `runner.ts` (`runAgent`, caps ~25
-  accounts/run). Model `OPENAI_MODEL` (default `gpt-4o-mini`).
+  strict JSON verdict), `context.ts`, `openai.ts` (`reason()` + **`completeJSON` — the provider seam
+  every reasoner shares**), `store.ts` (`sdr_agent_watches`/`sdr_agent_notes`/`sdr_activity_content`),
+  `runner.ts` (`runAgent`, caps ~25 accounts/run), **`briefs.ts` (V3 §7.2: grounded Account Briefs —
+  summary/stakeholders/signals/objections each with dated evidence + next step → `sdr_agent_briefs`,
+  stale-refresh ~20h, `runBriefs` caps 15/run)**. Model `OPENAI_MODEL` (default `gpt-4o-mini`).
+- **Timeline grounding gotchas (fixed, don't regress):** `loadTimelineForAccount` must fetch
+  newest-first then present chronologically (ascending+limit = the OLDEST slice), must map
+  dispositions to labels (models can't read GUIDs), and every jsonb `contains` on `company_ids`
+  needs the JSON-string form (`JSON.stringify([id])`) — the raw-array form 400s and graceful
+  catches silently returned [].
 - **Surface:** `/attention` renders **`AttentionBoardEnhanced`** (smart ranking via `lib/agent/ranking`
   + action tracking; the simpler `AttentionBoard` is the earlier version) — priority/rep filters,
   HubSpot backlinks + `/api/agent/watches`.
