@@ -140,6 +140,16 @@ function pickPrimaryCompany(targets: AssocTarget[] | undefined): string | null {
   return (primary ?? targets[0]).toId; // deterministic first-company fallback
 }
 
+/** First contact that resolves to a company → that company. Pure (unit-tested) — the deal
+ *  orphan-heal rule: a deal with no company association inherits its first contact's company. */
+export function fallbackCompanyFor(contactIds: string[], contactCompany: Map<string, string>): string | null {
+  for (const c of contactIds) {
+    const co = contactCompany.get(c);
+    if (co) return co;
+  }
+  return null;
+}
+
 export function companyIdsForActivity(
   contactIds: string[],
   contactCompany: Map<string, string>,
@@ -179,22 +189,51 @@ export async function resolveDealAssociations(raw: RawDeal[]): Promise<(Deal & {
   console.log(`Resolving deal associations for ${ids.length} deals…`);
   const dealCompany = await batchReadAssociations("deals", "companies", ids);
   const dealContacts = await batchReadAssociations("deals", "contacts", ids);
-  return raw.map((d) => ({
-    id: d.id,
-    pipeline: d.pipeline,
-    dealstage: d.dealstage,
-    stageKey: stageKey(d.pipeline, d.dealstage),
-    dealOwnerId: d.dealOwnerId,
-    sdrOwnerId: d.sdrOwnerId,
-    companyId: pickPrimaryCompany(dealCompany.get(d.id)),
-    contactIds: (dealContacts.get(d.id) ?? []).map((t) => t.toId),
-    amount: d.amount,
-    demoScheduledForMs: d.demoScheduledForMs,
-    discoveryDoneMs: d.discoveryDoneMs,
-    demoDoneMs: d.demoDoneMs,
-    stageEvents: d.stageEvents,
-    lastModifiedMs: d.lastModifiedMs,
-  }));
+
+  // Orphan heal: a deal with NO company association (measured: 44% of the Auto Pipeline — they
+  // silently dropped out of demo-status/funnel/health, which key on companyId) inherits the
+  // primary company of its first associated contact — the same rule activities already use.
+  const primaryOf = (d: RawDeal) => pickPrimaryCompany(dealCompany.get(d.id));
+  const orphanContactIds = [...new Set(
+    raw.filter((d) => !primaryOf(d)).flatMap((d) => (dealContacts.get(d.id) ?? []).map((t) => t.toId)),
+  )];
+  const contactCompany = new Map<string, string>();
+  if (orphanContactIds.length) {
+    console.log(`  resolving contact→company fallback for orphan deals (${orphanContactIds.length} contacts)…`);
+    const targets = await batchReadAssociations("contacts", "companies", orphanContactIds);
+    for (const [cid, t] of targets) {
+      const co = pickPrimaryCompany(t);
+      if (co) contactCompany.set(cid, co);
+    }
+  }
+
+  let healed = 0;
+  const out = raw.map((d) => {
+    const contactIds = (dealContacts.get(d.id) ?? []).map((t) => t.toId);
+    let companyId = primaryOf(d);
+    if (!companyId) {
+      companyId = fallbackCompanyFor(contactIds, contactCompany);
+      if (companyId) healed++;
+    }
+    return {
+      id: d.id,
+      pipeline: d.pipeline,
+      dealstage: d.dealstage,
+      stageKey: stageKey(d.pipeline, d.dealstage),
+      dealOwnerId: d.dealOwnerId,
+      sdrOwnerId: d.sdrOwnerId,
+      companyId,
+      contactIds,
+      amount: d.amount,
+      demoScheduledForMs: d.demoScheduledForMs,
+      discoveryDoneMs: d.discoveryDoneMs,
+      demoDoneMs: d.demoDoneMs,
+      stageEvents: d.stageEvents,
+      lastModifiedMs: d.lastModifiedMs,
+    };
+  });
+  if (healed) console.log(`  deal→company fallback healed ${healed} orphan deals via contacts`);
+  return out;
 }
 
 export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveResult> {
