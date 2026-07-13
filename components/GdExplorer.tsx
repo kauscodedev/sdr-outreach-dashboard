@@ -7,7 +7,9 @@
  * /api/rep/[ownerId]/book (stripped from the page payload for size).
  */
 import { useEffect, useMemo, useState } from "react";
-import { BookCoverage, BookUnitDetail } from "../lib/sync/types";
+import {
+  BookCoverage, BookUnitDetail, STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS, MarketSegment,
+} from "../lib/sync/types";
 import { Surface, SectionTitle, cn } from "./ui";
 import { UnitsTable } from "./AccountsTable";
 
@@ -15,10 +17,16 @@ const fmt = (n: number) => n.toLocaleString("en-IN");
 
 type Filter = "all" | "gds" | "singles" | "worked_by_other" | "untapped";
 
+const selectCls = "rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink-muted outline-none focus:ring-2 focus:ring-primary/30";
+
 export default function GdExplorer({ ownerId, book }: { ownerId: string; book: BookCoverage }) {
   const [units, setUnits] = useState<BookUnitDetail[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  // Column filters (V3): unit-level stage / segment / temperature.
+  const [stage, setStage] = useState<string>("all");
+  const [segment, setSegment] = useState<string>("all");
+  const [temp, setTemp] = useState<string>("all");
 
   useEffect(() => {
     let live = true;
@@ -30,13 +38,18 @@ export default function GdExplorer({ ownerId, book }: { ownerId: string; book: B
   }, [ownerId]);
 
   const shown = useMemo(() => {
-    const all = units ?? [];
-    if (filter === "gds") return all.filter((u) => u.isGroup);
-    if (filter === "singles") return all.filter((u) => !u.isGroup);
-    if (filter === "worked_by_other") return all.filter((u) => u.coverage === "worked_by_other");
-    if (filter === "untapped") return all.filter((u) => u.coverage === "untapped");
+    let all = units ?? [];
+    if (filter === "gds") all = all.filter((u) => u.isGroup);
+    else if (filter === "singles") all = all.filter((u) => !u.isGroup);
+    else if (filter === "worked_by_other") all = all.filter((u) => u.coverage === "worked_by_other");
+    else if (filter === "untapped") all = all.filter((u) => u.coverage === "untapped");
+    if (stage !== "all") all = all.filter((u) => u.stage === stage);
+    if (segment !== "all") all = all.filter((u) => u.segment === segment);
+    if (temp !== "all") all = all.filter((u) => u.temp === temp);
     return all;
-  }, [units, filter]);
+  }, [units, filter, stage, segment, temp]);
+
+  const filtersActive = stage !== "all" || segment !== "all" || temp !== "all";
 
   // Coverage is a 3-way split on the 60-day owner window: tapped / worked-by-others / untapped.
   const untapped = Math.max(0, book.units_total - book.units_tapped - book.units_worked_by_other);
@@ -54,13 +67,36 @@ export default function GdExplorer({ ownerId, book }: { ownerId: string; book: B
         Book Explorer — Group → Rooftops → Contacts
       </SectionTitle>
 
-      <div className="mb-3 mt-3 flex flex-wrap gap-1">
+      <div className="mb-2 mt-3 flex flex-wrap gap-1">
         {tabs.map((t) => (
           <button key={t.key} onClick={() => setFilter(t.key)}
             className={cn("rounded-lg px-2.5 py-1 text-xs font-semibold transition", filter === t.key ? "bg-ink text-white" : "bg-surface-muted text-ink-muted hover:text-ink")}>
             {t.label}
           </button>
         ))}
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <select value={stage} onChange={(e) => setStage(e.target.value)} className={selectCls} aria-label="Filter by stage">
+          <option value="all">Stage: all</option>
+          {STAGE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <select value={segment} onChange={(e) => setSegment(e.target.value)} className={selectCls} aria-label="Filter by segment">
+          <option value="all">Segment: all</option>
+          {MARKET_SEGMENTS.map((s) => <option key={s} value={s}>{MARKET_SEGMENT_LABELS[s as MarketSegment]}</option>)}
+        </select>
+        <select value={temp} onChange={(e) => setTemp(e.target.value)} className={selectCls} aria-label="Filter by temperature">
+          <option value="all">Temp: all</option>
+          <option value="hot">Hot</option>
+          <option value="warm">Warm</option>
+          <option value="cold">Cold</option>
+        </select>
+        {filtersActive && (
+          <button onClick={() => { setStage("all"); setSegment("all"); setTemp("all"); }}
+            className="rounded-lg bg-surface-muted px-2 py-1 text-xs font-semibold text-ink-muted transition hover:text-ink">
+            Clear · {fmt(shown.length)} shown
+          </button>
+        )}
       </div>
 
       {failed ? <p className="text-sm text-ink-subtle">Book detail unavailable.</p>

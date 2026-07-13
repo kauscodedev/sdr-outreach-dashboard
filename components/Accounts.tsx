@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Building2, MapPin, ChevronDown, ChevronRight, Loader2, Phone, Mail, User } from "lucide-react";
-import { Snapshot, BookUnitDetail, RooftopDetail, DemoStatus, RepFunnel } from "../lib/sync/types";
+import {
+  Snapshot, BookUnitDetail, RooftopDetail, DemoStatus, RepFunnel,
+  STAGE_GROUPS, MARKET_SEGMENTS, MARKET_SEGMENT_LABELS, MarketSegment,
+} from "../lib/sync/types";
 import { Viewer } from "../lib/spine/types";
 import { TeamFilterOption } from "../lib/team/helpers";
 import { companyUrl } from "../config/hubspot";
@@ -53,6 +56,11 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
   const [bucket, setBucket] = useState<Bucket>("all");
   const [team, setTeam] = useState<string>("all"); // "all" | "pod:*" | "team:*"
   const [rep, setRep] = useState<string>("");
+  // Column filters (V3): health/temp at rooftop level, stage/segment at unit level.
+  const [health, setHealth] = useState<string>("all"); // all | green | yellow | red | none (Temperature-governed)
+  const [temp, setTemp] = useState<string>("all");
+  const [stage, setStage] = useState<string>("all");
+  const [segment, setSegment] = useState<string>("all");
   const [units, setUnits] = useState<BookUnitDetail[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -108,10 +116,19 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
   const view = useMemo(() => {
     if (!units) return [] as BookUnitDetail[];
     const match = BUCKET_MATCH[bucket];
+    const roofOk = (r: RooftopDetail) => {
+      if (!match(statusOf(r))) return false;
+      if (health !== "all" && (r.deal?.health ?? "none") !== health) return false;
+      if (temp !== "all" && r.temp !== temp) return false;
+      return true;
+    };
     return units
-      .map((u) => ({ ...u, rooftops: u.rooftops.filter((r) => match(statusOf(r))) }))
+      .filter((u) => (stage === "all" || u.stage === stage) && (segment === "all" || u.segment === segment))
+      .map((u) => ({ ...u, rooftops: u.rooftops.filter(roofOk) }))
       .filter((u) => u.rooftops.length > 0);
-  }, [units, bucket]);
+  }, [units, bucket, health, temp, stage, segment]);
+
+  const columnFiltersActive = health !== "all" || temp !== "all" || stage !== "all" || segment !== "all";
 
   const tab = (key: Bucket, label: string, n?: number): [string, string] => [key, n != null ? `${label} ${n}` : label];
 
@@ -154,6 +171,33 @@ export default function AccountsView({ snapshot, viewer, teamFilters }: {
             value={bucket}
             onChange={(v) => setBucket(v as Bucket)}
           />
+          <select value={health} onChange={(e) => setHealth(e.target.value)} className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink-muted outline-none focus:ring-2 focus:ring-primary/30" aria-label="Filter by deal health">
+            <option value="all">Health: all</option>
+            <option value="green">🟢 Green</option>
+            <option value="yellow">🟡 Yellow</option>
+            <option value="red">🔴 Red</option>
+            <option value="none">No deal (Temp governs)</option>
+          </select>
+          <select value={temp} onChange={(e) => setTemp(e.target.value)} className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink-muted outline-none focus:ring-2 focus:ring-primary/30" aria-label="Filter by temperature">
+            <option value="all">Temp: all</option>
+            <option value="hot">Hot</option>
+            <option value="warm">Warm</option>
+            <option value="cold">Cold</option>
+          </select>
+          <select value={stage} onChange={(e) => setStage(e.target.value)} className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink-muted outline-none focus:ring-2 focus:ring-primary/30" aria-label="Filter by GD stage">
+            <option value="all">Stage: all</option>
+            {STAGE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <select value={segment} onChange={(e) => setSegment(e.target.value)} className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink-muted outline-none focus:ring-2 focus:ring-primary/30" aria-label="Filter by market segment">
+            <option value="all">Segment: all</option>
+            {MARKET_SEGMENTS.map((s) => <option key={s} value={s}>{MARKET_SEGMENT_LABELS[s as MarketSegment]}</option>)}
+          </select>
+          {columnFiltersActive && (
+            <button onClick={() => { setHealth("all"); setTemp("all"); setStage("all"); setSegment("all"); }}
+              className="rounded-lg bg-surface-muted px-2 py-1.5 text-xs font-semibold text-ink-muted transition hover:text-ink">
+              Clear filters · {view.length} shown
+            </button>
+          )}
         </div>
 
         {loading && (
