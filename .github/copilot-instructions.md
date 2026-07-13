@@ -44,7 +44,7 @@ This document guides Copilot sessions working in this repository. For deeper arc
   - Single file: `npm test -- --run tests/temperature.test.ts`
   - By name: `npm test -- --run -t "temperature"`
   - Watch mode: `npx vitest tests/temperature.test.ts` (drop the `--run`)
-- **Test coverage:** `tests/` covers pure logic only — 15 files: US/Eastern bucketing with DST, aggregation (incl. GD grouping + deal integration), activity/deal→company association, temperature classification, the canonical deal-stage engine, demo-status segmentation, Deal Health, call-quality mapping, spine row mappers, RBAC scope decision, agent detector/prompt/ranking, and the auth-domain rule. Never import `server-only` modules in tests; they throw under Vitest.
+- **Test coverage:** `tests/` covers pure logic only — 16 files: US/Eastern bucketing with DST, aggregation (incl. GD grouping + deal integration + V3 event-truth demos/pipeline), activity/deal→company association, temperature classification, the canonical deal-stage engine (+ V3 active/parked/demo-completed predicates), stage-event extraction, demo-status segmentation, Deal Health, call-quality mapping, spine row mappers, RBAC scope decision, agent detector/prompt/ranking, and the auth-domain rule. Never import `server-only` modules in tests; they throw under Vitest.
 
 ## Architecture Overview
 
@@ -98,6 +98,10 @@ HubSpot **deals** are a first-class object (Auto Pipeline `1001348836` only; eve
 - **Deal Health** (`lib/sync/deal-health.ts`): green/yellow/red (terminal stages decide on stage alone, else a 14d→yellow / 30d→red recency ladder).
 
 **Two-indicator rule:** accounts *with* a live deal show **Deal Health**; accounts *without* one keep hot/warm/cold **Temperature**. Never merged — a rooftop's `deal.health` is null exactly when Temperature governs, and the UI picks whichever is set.
+
+### Funnel Truth: Stage-Event Ledger (V3)
+
+Period funnel metrics are **event-based, never current-stage-based**. `sdr_deal_stage_events` records when each deal entered/exited each canonical stage (from HubSpot's built-in `hs_v2_date_entered/exited_<stageId>` properties; pure extraction in `lib/sync/stage-events.ts`). **Demos Scheduled** = entered `discovery_done` in the period; **Demos Completed** = FIRST entry into `demo_done`/`demo_accepted`/`in_discussion` (all three count) → `PeriodMetrics.demos`. **Pipeline segregation** (`RepData.pipeline`): active (pre/post-demo) / parked (`future_prospect`) / won (incl. `transferred_cs`) / lost, by current stage. SDRs credited via `sdr_owner`, AEs via `hubspot_owner_id` — two lenses, never summed. `sdr_contact_companies` = explicit contact↔rooftop M:N junction. Both tables degrade gracefully pre-migration; both snapshot fields are optional — guard on pre-V3 snapshots.
 
 ### Coverage Attribution
 

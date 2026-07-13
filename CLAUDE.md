@@ -61,12 +61,13 @@ test name; drop `run` for watch mode). Tests (`tests/`) cover only pure logic: U
 (`buckets.test.ts`, incl. DST cases), aggregation incl. GD book units + owner≠doer + monthly + deal
 integration (`aggregate.test.ts`, plus GD-grouping edge cases in `aggregate-gd-grouping.test.ts`),
 activity/deal→company association (`associate.test.ts`), the temperature classifier
-(`temperature.test.ts`), the canonical deal-stage engine incl. the pipeline-collision guard
-(`deal-stages.test.ts`), demo-status segmentation (`segmentation.test.ts`), Deal Health
+(`temperature.test.ts`), the canonical deal-stage engine incl. the pipeline-collision guard + the
+V3 active/parked/demo-completed predicates (`deal-stages.test.ts`), stage-event extraction + row
+mappers (`stage-events.test.ts`), demo-status segmentation (`segmentation.test.ts`), Deal Health
 (`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`), spine row mappers incl. deal
 mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the agent detector
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
-(`agent-ranking.test.ts`), and the auth-domain rule (`auth-domain.test.ts`) — 15 files in all. Never
+(`agent-ranking.test.ts`), and the auth-domain rule (`auth-domain.test.ts`) — 16 files in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -87,10 +88,13 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   └─ lib/spine/runner.ts   orchestration (watermark-driven, advisory-locked, idempotent)
        ├─ lib/sync/pull.ts        pullChangedActivities / pullChangedCompanies / pullChangedDeals (hs_lastmodifieddate > watermark)
        ├─ lib/sync/associate.ts   resolve activity/deal → contact → company (v4 batch reads); resolveDealAssociations
-       ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/deals/owners; saveSnapshot()
+       ├─ lib/sync/stage-events.ts pure hs_v2_date_entered/exited_<stageId> → DealStageEvent extraction (V3)
+       ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/deals/
+       │                           deal_stage_events/contact_companies/owners; saveSnapshot()
        └─ lib/sync/aggregate.ts   rebuild the Snapshot: reach, temperature (temperature.ts), Deal Health
                                    (deal-health.ts), demo-status (segmentation.ts), owner-recency coverage,
-                                   per-rep funnel, monthly new-unique, quality, insights
+                                   per-rep funnel, event-truth demos + active/inactive pipeline (V3),
+                                   monthly new-unique, quality, insights
              ↓  saveSnapshot()  (sdr_save_snapshot RPC, else retrying upsert)
   sdr_snapshots (one jsonb row, id=1)   ← the delta writes this; getSnapshot reads it first
              ↓
@@ -132,6 +136,8 @@ lists + an `AccountDeal` block) — others omit it to keep the snapshot small. `
 Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome/owner/contact).
 **`RepData.funnel`** (`RepFunnel`) counts owned rooftops by demo-status (Pending/Scheduled/Done +
 `scheduled_at_risk`). `RepData.monthly` is the last 3 ET months of new-vs-existing tapped rooftops/contacts.
+**V3:** `PeriodMetrics.demos` (`{scheduled, completed}` — event-truth per period) and `RepData.pipeline`
+(`RepPipeline`: active pre/post-demo, parked, won, lost, by_stage) — both optional; guard on pre-V3 snapshots.
 
 ## Conventions & gotchas (the load-bearing rules)
 
@@ -180,6 +186,22 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   30d→red recency ladder; a Demo-Scheduled deal whose demo date has passed → yellow). Both attach to
   `RooftopDetail.deal` and feed `RepData.funnel`. All three (stage map, segmentation, health) are pure +
   unit-tested (`deal-stages`/`segmentation`/`deal-health` tests).
+- **V3 funnel truth is EVENT-based, never current-stage-based.** `sdr_deal_stage_events` records WHEN
+  each deal entered/exited each canonical stage, from HubSpot's built-in
+  `hs_v2_date_entered/exited_<stageId>` calculated properties (pure extraction in
+  `lib/sync/stage-events.ts`; requested in the same deals pull — no property-history API). Period
+  metrics: **Demos Scheduled** = entered `discovery_done` in the period (deals are created at that
+  stage in practice — verified live: entered == createdate); **Demos Completed** = FIRST entry into
+  `demo_done`/`demo_accepted`/`in_discussion` (locked: all three count). `demoScheduledMs`/
+  `demoCompletedMs` (`aggregate.ts`) are ledger-first with stage-date-column fallback, bucketed via
+  the same `periodsForActivity` as activities → `PeriodMetrics.demos`. **Active/inactive segregation**
+  (`computeRepPipeline` → `RepData.pipeline`): active = in-funnel, not terminal, not parked
+  (`isActive`; `future_prospect` is **parked** by decision; `transferred_cs` counts as won), split
+  pre/post-demo via `isPostDemo`. SDRs are credited via `sdr_owner`, AEs via `hubspot_owner_id` —
+  two lenses, never summed. `sdr_contact_companies` is the explicit contact↔rooftop M:N junction
+  (fed from association reads already on the delta path — no extra HubSpot calls). Both new tables
+  degrade gracefully pre-migration (own try/catch; the loader falls back), and the nightly
+  reconcile's full deal re-pull backfills the ledger once the schema is applied.
 - **"Connected" is a business rule, not `hs_call_status`.** Only the 11 GUIDs in
   `config/dispositions.ts` `CONNECTED_DISPOSITIONS` count as reaching a human. Ported verbatim from
   `call-scoring-agent/config/dispositions.py`; keep in sync. `connect_rate` excludes null-disposition
@@ -307,6 +329,13 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
 
 - **Temperature** / **Deal Health** — see the temperature + deals conventions above + `lib/sync/temperature.ts`
   / `lib/sync/deal-health.ts`. Two-indicator: Deal Health for accounts with a live deal, Temperature otherwise.
+- **Demos scheduled / completed (V3, per period)** (`demoScheduledMs`/`demoCompletedMs`): scheduled =
+  the deal entered `discovery_done` within the period; completed = FIRST entry into
+  `demo_done`/`demo_accepted`/`in_discussion`. Stage-event-ledger-first, stage-date-column fallback.
+  SDR lens keys on `sdr_owner`, AE lens on `hubspot_owner_id` → `PeriodMetrics.demos`.
+- **Pipeline segregation (V3, period-independent)** (`computeRepPipeline` → `RepData.pipeline`):
+  attributed deals by current stage → active (pre/post-demo) / parked (`future_prospect`) / won
+  (incl. `transferred_cs`) / lost, + `by_stage` counts of active deals.
 - **Demo-status segmentation** (`lib/sync/segmentation.ts` `segmentAccount`): per owned company from its
   deals' canonical stage keys → Demo Pending (no live deal past Discovery) / Scheduled (meeting booked, +
   at-risk on no-show/reschedule) / Done (demo happened → won); the furthest live deal governs; terminal-only
