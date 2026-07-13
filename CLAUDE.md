@@ -68,8 +68,9 @@ mappers (`stage-events.test.ts`), demo-status segmentation (`segmentation.test.t
 mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the agent detector
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
 (`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), the pod/team filter
-options (`team-filters.test.ts`), and the account-timeline builder (`account-timeline.test.ts`)
-— 18 files in all. Never
+options (`team-filters.test.ts`), the account-timeline builder (`account-timeline.test.ts`),
+Forecast v1 (`forecast.test.ts`), and the integrity checks (`integrity.test.ts`) — 20 files in
+all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -119,9 +120,17 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
                           button on each Accounts rooftop row + Deal Funnel row)
   app/api/deals   the Deal Funnel workbench (V3): stage-wise counts + $ per canonical stage +
                           merged Lost block, ledger flow conversion (scheduled→completed→contract→won),
-                          and up to 100 deals/stage in ONE response (client stage-clicks don't refetch);
-                          lens=sdr|ae|all picks the crediting owner field; contract in
-                          lib/sync/deal-funnel.ts → components/DealFunnel.tsx
+                          Forecast v1 (lib/sync/forecast.ts — RESOLVED-cohort conversion per stage,
+                          median stage velocity, conversion-weighted expected pipeline value; thin
+                          cohorts <20 show null, amounts never imputed), and up to 100 deals/stage in
+                          ONE response (client stage-clicks don't refetch); lens=sdr|ae|all picks the
+                          crediting owner field; contract in lib/sync/deal-funnel.ts →
+                          components/DealFunnel.tsx (incl. ForecastCard)
+  app/api/integrity   read-only data-integrity queue (V3 P3b): pure checks in
+                          lib/integrity/checks.ts — active orphan deals, slipped demos, stale actives
+                          (30d/60d), deal-vs-account owner mismatches, ledger stage regressions — each
+                          with a deterministic suggested action; rendered by
+                          components/admin/IntegrityQueue.tsx on /admin
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
 
 scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)
