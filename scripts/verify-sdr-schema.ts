@@ -12,6 +12,7 @@ const TABLES: [table: string, col: string][] = [
   ["sdr_activities","hs_id"],["sdr_companies","hs_id"],["sdr_contacts","hs_id"],
   ["sdr_owners","owner_id"],["sdr_teams","team_id"],["sdr_team_members","team_id"],
   ["sdr_roles","email"],["sdr_sync_state","key"],["sdr_snapshots","id"],
+  ["sdr_deals","hs_id"],["sdr_deal_stage_events","deal_id"],["sdr_contact_companies","contact_id"],
 ];
 
 async function main() {

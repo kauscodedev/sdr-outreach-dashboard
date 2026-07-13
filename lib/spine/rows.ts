@@ -1,9 +1,9 @@
 /** Pure row↔domain mappers + watermark math. No I/O — unit-tested. */
-import { Activity, Deal } from "../sync/types";
+import { Activity, Deal, DealStageEvent } from "../sync/types";
 import { OwnedCompany } from "../sync/pull";
-import { ActivityRow, CompanyRow, ContactRow, DealRow } from "./types";
+import { ActivityRow, CompanyRow, ContactRow, DealRow, DealStageEventRow } from "./types";
 import { ContactMeta } from "../sync/associate";
-import { stageKey, isWon, isLost } from "../../config/deal-stages";
+import { stageKey, isWon, isLost, DealStageKey } from "../../config/deal-stages";
 
 const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
@@ -63,6 +63,21 @@ export function rowToDeal(r: DealRow): Deal {
     demoScheduledForMs: r.demo_scheduled_for_ms == null ? null : Number(r.demo_scheduled_for_ms),
     discoveryDoneMs: r.discovery_done_ms == null ? null : Number(r.discovery_done_ms),
     demoDoneMs: r.demo_done_ms == null ? null : Number(r.demo_done_ms),
+  };
+}
+
+/** A deal's stage-event ledger → sdr_deal_stage_events rows. */
+export function dealStageEventRows(d: Deal): DealStageEventRow[] {
+  return (d.stageEvents ?? []).map((e) => ({
+    deal_id: d.id, stage_key: e.stageKey, entered_ms: e.enteredMs, exited_ms: e.exitedMs,
+  }));
+}
+
+export function rowToStageEvent(r: DealStageEventRow): DealStageEvent {
+  return {
+    stageKey: r.stage_key as DealStageKey,
+    enteredMs: Number(r.entered_ms),
+    exitedMs: r.exited_ms == null ? null : Number(r.exited_ms),
   };
 }
 

@@ -7,6 +7,10 @@ import {
   isLost,
   isMeetingSet,
   isPostDemo,
+  isDemoCompletedStage,
+  isParked,
+  isTerminal,
+  isActive,
   stageOrder,
   DealStageKey,
 } from "../config/deal-stages";
@@ -78,6 +82,51 @@ describe("stage predicates", () => {
     expect(isPostDemo("transferred_cs")).toBe(true);
     expect(isPostDemo("discovery_done")).toBe(false);
     expect(isPostDemo("drop_off_sales")).toBe(false);
+  });
+});
+
+describe("V3 predicates — demo-completed / parked / terminal / active", () => {
+  it("isDemoCompletedStage covers all three completion stages (locked decision: all 3 count)", () => {
+    expect(isDemoCompletedStage("demo_done")).toBe(true);
+    expect(isDemoCompletedStage("demo_accepted")).toBe(true);
+    expect(isDemoCompletedStage("in_discussion")).toBe(true);
+    expect(isDemoCompletedStage("discovery_done")).toBe(false);
+    expect(isDemoCompletedStage("contract_initiated")).toBe(false);
+  });
+
+  it("isParked = Future Prospect only (locked decision: parked, not active)", () => {
+    expect(isParked("future_prospect")).toBe(true);
+    expect(isParked("in_discussion")).toBe(false);
+    expect(isParked("drop_off_sales")).toBe(false);
+  });
+
+  it("isTerminal = won + lost + transferred to CS", () => {
+    expect(isTerminal("contract_closed")).toBe(true);
+    expect(isTerminal("payment_completed")).toBe(true);
+    expect(isTerminal("transferred_cs")).toBe(true);
+    expect(isTerminal("drop_off_sdr")).toBe(true);
+    expect(isTerminal("non_sal")).toBe(true);
+    expect(isTerminal("contract_initiated")).toBe(false);
+    expect(isTerminal("future_prospect")).toBe(false);
+  });
+
+  it("isActive = in-funnel, not terminal, not parked — both motions", () => {
+    // SDR motion (pre-demo)
+    expect(isActive("mql")).toBe(true);
+    expect(isActive("discovery_done")).toBe(true);
+    expect(isActive("demo_no_show")).toBe(true);
+    expect(isActive("demo_rescheduled")).toBe(true);
+    // AE motion (post-demo)
+    expect(isActive("demo_done")).toBe(true);
+    expect(isActive("demo_accepted")).toBe(true);
+    expect(isActive("in_discussion")).toBe(true);
+    expect(isActive("contract_initiated")).toBe(true);
+    // Not active: parked, terminal, out-of-funnel
+    expect(isActive("future_prospect")).toBe(false);
+    expect(isActive("contract_closed")).toBe(false);
+    expect(isActive("transferred_cs")).toBe(false);
+    expect(isActive("drop_off_sales")).toBe(false);
+    expect(isActive("other")).toBe(false);
   });
 });
 

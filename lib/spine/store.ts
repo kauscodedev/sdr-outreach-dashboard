@@ -5,9 +5,9 @@ import { supabaseAdmin } from "../supabase/admin";
 import { Snapshot } from "../sync/types";
 import { OwnedCompany } from "../sync/pull";
 import { ContactMeta } from "../sync/associate";
-import { ActivityRow, CompanyRow, ContactRow, DealRow, OwnerRow, TeamMemberRow, TeamRow } from "./types";
-import { rowToActivity, rowToContactMeta, rowToOwnedCompany, rowToDeal } from "./rows";
-import { Activity, Deal } from "../sync/types";
+import { ActivityRow, CompanyRow, ContactCompanyRow, ContactRow, DealRow, DealStageEventRow, OwnerRow, TeamMemberRow, TeamRow } from "./types";
+import { rowToActivity, rowToContactMeta, rowToOwnedCompany, rowToDeal, rowToStageEvent } from "./rows";
+import { Activity, Deal, DealStageEvent } from "../sync/types";
 
 const BATCH = 500;
 const PAGE = 1000;
@@ -35,6 +35,10 @@ export const upsertActivities = (rows: ActivityRow[]) => upsertBatched("sdr_acti
 export const upsertCompanies = (rows: Partial<CompanyRow>[]) => upsertBatched("sdr_companies", rows as object[], "hs_id");
 export const upsertContacts = (rows: ContactRow[]) => upsertBatched("sdr_contacts", rows, "hs_id");
 export const upsertDeals = (rows: DealRow[]) => upsertBatched("sdr_deals", rows, "hs_id");
+export const upsertDealStageEvents = (rows: DealStageEventRow[]) =>
+  upsertBatched("sdr_deal_stage_events", rows, "deal_id,stage_key,entered_ms");
+export const upsertContactCompanies = (rows: ContactCompanyRow[]) =>
+  upsertBatched("sdr_contact_companies", rows, "contact_id,company_id");
 
 /**
  * Owners+teams are small (~100 rows). Upsert FIRST, then prune stale memberships — the app
@@ -166,6 +170,23 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   } catch (e) {
     console.warn(`[spine] sdr_deals unavailable (${e instanceof Error ? e.message : e}) — aggregating without deals until the V2 migration is applied`);
   }
+  // Stage-event ledger (V3) — tolerate the table being absent (period funnel metrics then fall
+  // back to the deal's own stage-date columns; see the aggregate's demoScheduled/CompletedMs).
+  const eventsByDeal = new Map<string, DealStageEvent[]>();
+  if (dealRows.length) {
+    try {
+      const evRows = await fetchAll<DealStageEventRow>("sdr_deal_stage_events",
+        "deal_id,stage_key,entered_ms,exited_ms", ["deal_id", "stage_key", "entered_ms"]);
+      for (const r of evRows) {
+        const list = eventsByDeal.get(r.deal_id) ?? [];
+        list.push(rowToStageEvent(r));
+        eventsByDeal.set(r.deal_id, list);
+      }
+      for (const list of eventsByDeal.values()) list.sort((a, b) => a.enteredMs - b.enteredMs);
+    } catch (e) {
+      console.warn(`[spine] sdr_deal_stage_events unavailable (${e instanceof Error ? e.message : e}) — aggregating without the stage-event ledger until the V3 migration is applied`);
+    }
+  }
 
   const companyNames: Record<string, string> = {};
   const companyGdStage: Record<string, string | null> = {};
@@ -179,7 +200,12 @@ export async function loadStoreForAggregate(anchorMs: number, ownerIds: string[]
   const contactMeta: Record<string, ContactMeta> = {};
   for (const r of ctRows) contactMeta[r.hs_id] = rowToContactMeta(r);
 
-  return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies, deals: dealRows.map(rowToDeal) };
+  const deals = dealRows.map((r) => {
+    const d = rowToDeal(r);
+    const ev = eventsByDeal.get(d.id);
+    return ev ? { ...d, stageEvents: ev } : d;
+  });
+  return { activities: actRows.map(rowToActivity), companyNames, companyGdStage, contactMeta, ownedCompanies, deals };
 }
 
 /** Snapshots are stored gzip-compressed (base64 inside the jsonb column). Uncompressed they are

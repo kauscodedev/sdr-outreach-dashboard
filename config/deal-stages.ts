@@ -108,6 +108,13 @@ const POST_DEMO = new Set<DealStageKey>([
   "transferred_cs",
 ]);
 
+/**
+ * The demo is considered COMPLETED once the deal has entered any of these three stages
+ * (locked with the user: Demo Done, Demo Accepted, AND In Discussion all count).
+ * Period metrics use the FIRST entry into this set ("demos completed in period P").
+ */
+const DEMO_COMPLETED = new Set<DealStageKey>(["demo_done", "demo_accepted", "in_discussion"]);
+
 /** Closed-won terminal (Contract Closed / Payment Completed — there's no literal "Closed Won"). */
 export const isWon = (key: DealStageKey): boolean => WON.has(key);
 /** Dead / disqualified branch: SDR drop, sales (AE) drop, or Non SAL. */
@@ -116,6 +123,19 @@ export const isLost = (key: DealStageKey): boolean => LOST.has(key);
 export const isMeetingSet = (key: DealStageKey): boolean => MEETING_SET.has(key);
 /** The demo has taken place (the account is in the AE's demo→closure motion). */
 export const isPostDemo = (key: DealStageKey): boolean => POST_DEMO.has(key);
+/** Entering this stage completes the demo (Demo Done / Demo Accepted / In Discussion). */
+export const isDemoCompletedStage = (key: DealStageKey): boolean => DEMO_COMPLETED.has(key);
+/** PARKED (locked with the user): Future Prospect is a real deal deliberately shelved —
+ *  excluded from active-pipeline counts but neither lost nor won. */
+export const isParked = (key: DealStageKey): boolean => key === "future_prospect";
+/** No further sales motion: won, lost, or handed to CS. */
+export const isTerminal = (key: DealStageKey): boolean =>
+  WON.has(key) || LOST.has(key) || key === "transferred_cs";
+/** ACTIVE = a live deal that needs sales motion NOW: in-funnel, not terminal, not parked.
+ *  Lens split: active ∧ !isPostDemo = the SDR's lead→demo motion (MQL → Demo Rescheduled);
+ *  active ∧ isPostDemo = the AE's demo→closure motion (Demo Done → Contract Initiated). */
+export const isActive = (key: DealStageKey): boolean =>
+  key !== "other" && !isTerminal(key) && !isParked(key);
 
 /**
  * Funnel progression, used to pick the "furthest" deal when a company has several.

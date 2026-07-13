@@ -81,6 +81,35 @@ create index if not exists idx_sdr_deals_owner on sdr_deals(deal_owner_id);
 create index if not exists idx_sdr_deals_sdr on sdr_deals(sdr_owner_id);
 create index if not exists idx_sdr_deals_stage on sdr_deals(stage_key);
 
+-- V3: deal stage-event ledger — WHEN each deal entered/exited each canonical stage. This is the
+-- event-truth layer under the period funnel metrics ("demos scheduled/completed in period P"),
+-- stage velocity, and forecasting. Populated from HubSpot's built-in calculated properties
+-- hs_v2_date_entered_<stageId> / hs_v2_date_exited_<stageId> on the same deals pull — no
+-- property-history API. hs_v2 carries the LATEST entry per stage; re-entries append a new row
+-- (new entered_ms) and old rows are kept, so the ledger is append-mostly.
+create table if not exists sdr_deal_stage_events (
+  deal_id    text not null,
+  stage_key  text not null,   -- canonical DealStageKey (config/deal-stages.ts)
+  entered_ms bigint not null,
+  exited_ms  bigint,          -- null = still in this stage
+  updated_at timestamptz not null default now(),
+  primary key (deal_id, stage_key, entered_ms)
+);
+create index if not exists idx_sdr_dse_stage_entered on sdr_deal_stage_events(stage_key, entered_ms);
+
+-- V3: contact ↔ company junction (contacts link to MULTIPLE rooftops). Until now the mapping
+-- existed only implicitly via activity contact_ids/company_ids arrays; this makes it explicit.
+-- Fed from the v4 contact→company association reads the delta already performs, so it grows
+-- with activity — no extra HubSpot calls.
+create table if not exists sdr_contact_companies (
+  contact_id text not null,
+  company_id text not null,
+  is_primary boolean not null default false,   -- HubSpot-defined primary company association
+  updated_at timestamptz not null default now(),
+  primary key (contact_id, company_id)
+);
+create index if not exists idx_sdr_cc_company on sdr_contact_companies(company_id);
+
 create table if not exists sdr_owners (
   owner_id   text primary key,
   email      text,
@@ -259,7 +288,8 @@ begin
   foreach t in array array['sdr_activities','sdr_companies','sdr_contacts','sdr_deals','sdr_owners',
                            'sdr_teams','sdr_team_members','sdr_roles','sdr_sync_state','sdr_snapshots',
                            'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
-                           'sdr_pods','sdr_managers','sdr_roster']
+                           'sdr_pods','sdr_managers','sdr_roster',
+                           'sdr_deal_stage_events','sdr_contact_companies']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);

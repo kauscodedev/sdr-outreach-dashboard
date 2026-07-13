@@ -154,11 +154,19 @@ export function companyIdsForActivity(
   return [...out];
 }
 
+/** One contact→company association (a contact can link to MULTIPLE rooftops). */
+export interface ContactCompanyLink {
+  contactId: string;
+  companyId: string;
+  isPrimary: boolean; // the HubSpot-defined primary company association
+}
+
 export interface ResolveResult {
   activities: Activity[];
   companyNames: Record<string, string>;
   companyGdStage: Record<string, string | null>;
   contactMeta: Record<string, ContactMeta>;
+  contactCompanies: ContactCompanyLink[]; // feeds sdr_contact_companies (explicit M:N junction)
 }
 
 /**
@@ -184,6 +192,7 @@ export async function resolveDealAssociations(raw: RawDeal[]): Promise<(Deal & {
     demoScheduledForMs: d.demoScheduledForMs,
     discoveryDoneMs: d.discoveryDoneMs,
     demoDoneMs: d.demoDoneMs,
+    stageEvents: d.stageEvents,
     lastModifiedMs: d.lastModifiedMs,
   }));
 }
@@ -213,9 +222,13 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
     [...allContactIds],
   );
   const contactCompany = new Map<string, string>();
+  // The batch read returns ALL of a contact's company associations; we keep the primary for
+  // activity attribution AND persist every pair — the explicit contact↔rooftop M:N junction.
+  const contactCompanies: ContactCompanyLink[] = [];
   for (const [contactId, targets] of contactCompanyTargets) {
     const co = pickPrimaryCompany(targets);
     if (co) contactCompany.set(contactId, co);
+    for (const t of targets) contactCompanies.push({ contactId, companyId: t.toId, isPrimary: t.primary });
   }
 
   // Direct company associations are not just a fallback. In HubSpot, a logged
@@ -258,5 +271,5 @@ export async function resolveAssociations(raw: RawActivity[]): Promise<ResolveRe
   console.log(`Resolving ${allContactIds.size} contact names + titles…`);
   const contactMeta = await resolveContactMeta([...allContactIds]);
 
-  return { activities, companyNames, companyGdStage, contactMeta };
+  return { activities, companyNames, companyGdStage, contactMeta, contactCompanies };
 }

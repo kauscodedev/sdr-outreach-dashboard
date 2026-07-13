@@ -9,7 +9,8 @@
 
 import { hubspotPost, hubspotGet, RATE_LIMIT_DELAY_MS, delay } from "../hubspot/client";
 import { getTrackedOwnerIds } from "../team/load";
-import { ActivityType } from "./types";
+import { ActivityType, DealStageEvent } from "./types";
+import { STAGE_DATE_PROPERTIES, stageEventsOf } from "./stage-events";
 import { AUTO_PIPELINE_ID } from "../../config/deal-stages";
 
 const DAY_MS = 86_400_000;
@@ -435,13 +436,16 @@ export interface RawDeal {
   demoScheduledForMs: number | null;
   discoveryDoneMs: number | null;
   demoDoneMs: number | null;
+  stageEvents: DealStageEvent[]; // per-stage entered/exited (hs_v2 calculated properties)
   lastModifiedMs: number;
 }
 
+// Stage-date (hs_v2) properties → the sdr_deal_stage_events ledger; see lib/sync/stage-events.ts.
 const DEAL_DELTA_PROPERTIES = [
   "pipeline", "dealstage", "hubspot_owner_id", "sdr_owner", "amount",
   "demo_scheduled_for_date", "discovery_call_done_stage_date", "demo_done_stage_date",
   "hs_lastmodifieddate",
+  ...STAGE_DATE_PROPERTIES,
 ];
 
 const amountOf = (v: string | null | undefined): number | null => {
@@ -474,6 +478,7 @@ export async function pullChangedDeals(sinceMs: number, maxWindows?: number, own
     demoScheduledForMs: toMs(r.properties.demo_scheduled_for_date ?? null) || null,
     discoveryDoneMs: toMs(r.properties.discovery_call_done_stage_date ?? null) || null,
     demoDoneMs: toMs(r.properties.demo_done_stage_date ?? null) || null,
+    stageEvents: stageEventsOf(r.properties),
     lastModifiedMs: toMs(r.properties.hs_lastmodifieddate ?? null) || 0,
   }));
 }

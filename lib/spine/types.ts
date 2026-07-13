@@ -39,6 +39,19 @@ export interface ContactRow {
   dm: boolean;
 }
 
+export interface DealStageEventRow {
+  deal_id: string;
+  stage_key: string; // canonical DealStageKey
+  entered_ms: number;
+  exited_ms: number | null;
+}
+
+export interface ContactCompanyRow {
+  contact_id: string;
+  company_id: string;
+  is_primary: boolean;
+}
+
 export interface DealRow {
   hs_id: string;
   pipeline: string | null;

@@ -10,12 +10,13 @@ import {
   pullOwnersTeams, PullCaps, RawActivity,
 } from "../sync/pull";
 import { Deal } from "../sync/types";
-import { activityToRow, dealToRow, nextWatermark } from "./rows";
+import { activityToRow, dealToRow, dealStageEventRows, nextWatermark } from "./rows";
 import { loadTeamStructure } from "../team/load";
 import { nameMap, kindMap, trackedOwnerIds } from "../team/helpers";
 import {
   getWatermark, loadStoreForAggregate, reconcileOwnedCompanies, replaceOwnersTeams,
-  saveSnapshot, setSyncState, tryLock, unlock, upsertActivities, upsertCompanies, upsertContacts, upsertDeals,
+  saveSnapshot, setSyncState, tryLock, unlock, upsertActivities, upsertCompanies,
+  upsertContactCompanies, upsertContacts, upsertDealStageEvents, upsertDeals,
 } from "./store";
 
 /** Deal backfill drains everything (well above the per-run delta resume cap of 3). */
@@ -75,7 +76,7 @@ async function refreshOwnersTeams() {
 }
 
 async function persistResolved(raw: RawActivity[]) {
-  const { activities, companyNames, companyGdStage, contactMeta } = await resolveAssociations(raw);
+  const { activities, companyNames, companyGdStage, contactMeta, contactCompanies } = await resolveAssociations(raw);
   const lastMod = new Map(raw.map((r) => [r.id, r.lastModifiedMs ?? null]));
   await upsertActivities(activities.map((a) => activityToRow(a, lastMod.get(a.id) ?? null)));
   await upsertCompanies(Object.keys(companyNames).map((id) => ({
@@ -85,6 +86,17 @@ async function persistResolved(raw: RawActivity[]) {
     hs_id, name: m.name, title: m.title, dm: m.dm,
   }));
   await upsertContacts(metaRows);
+  // Contact↔company junction (V3) — its own graceful catch so a not-yet-applied migration
+  // never blocks the activity persist.
+  if (contactCompanies.length) {
+    try {
+      await upsertContactCompanies(contactCompanies.map((l) => ({
+        contact_id: l.contactId, company_id: l.companyId, is_primary: l.isPrimary,
+      })));
+    } catch (e) {
+      console.warn(`[spine] contact-companies skipped (${e instanceof Error ? e.message : e}) — apply the V3 migration if this persists`);
+    }
+  }
   return activities.length;
 }
 
@@ -96,6 +108,14 @@ async function persistDeals(sinceMs: number, maxWindows?: number, ownerIdsOverri
     if (!raw.length) return [];
     const deals = await resolveDealAssociations(raw);
     await upsertDeals(deals.map((d) => dealToRow(d, d.lastModifiedMs)));
+    // Stage-event ledger (V3) — its own graceful catch so a not-yet-applied migration never
+    // blocks the deal persist (and the deals watermark still advances).
+    try {
+      const evRows = deals.flatMap(dealStageEventRows);
+      if (evRows.length) await upsertDealStageEvents(evRows);
+    } catch (e) {
+      console.warn(`[spine] stage-events skipped (${e instanceof Error ? e.message : e}) — apply the V3 migration if this persists`);
+    }
     return deals;
   } catch (e) {
     // Degrade gracefully if the V2 migration (sdr_deals) hasn't been applied yet — the rest of

@@ -46,6 +46,17 @@ export interface Activity {
 }
 
 /**
+ * One stage transition of a deal — WHEN it entered (and, if it moved on, exited) a canonical
+ * stage. Sourced from HubSpot's calculated hs_v2_date_entered/exited_<stageId> properties.
+ * This is the event-truth layer: period funnel metrics count these, never current stage.
+ */
+export interface DealStageEvent {
+  stageKey: DealStageKey;
+  enteredMs: number;
+  exitedMs: number | null; // null = still in this stage
+}
+
+/**
  * A HubSpot deal after pull + association resolution. Scoped to the Auto Pipeline; `stageKey`
  * is the canonical (pipeline, dealstage) normalization (see config/deal-stages.ts) so all
  * downstream logic is collision-safe. `dealstage` keeps the raw id for storage/debugging.
@@ -63,6 +74,7 @@ export interface Deal {
   demoScheduledForMs: number | null; // demo_scheduled_for_date — the meeting date
   discoveryDoneMs: number | null; // discovery_call_done_stage_date
   demoDoneMs: number | null; // demo_done_stage_date
+  stageEvents?: DealStageEvent[]; // stage-event ledger, entered_ms asc (absent pre-V3)
 }
 
 export interface CallMetrics {
@@ -335,6 +347,10 @@ export interface PeriodMetrics {
   insights: Insight[];
   unattributed_activities: number;
   company_breakdown?: CompanyBreakdownRow[]; // narrow periods only
+  /** Event-truth demo funnel for the period: deals that ENTERED Discovery Call Done (scheduled)
+   *  / first entered Demo Done/Accepted/In Discussion (completed) within it. From the stage-event
+   *  ledger, so counts don't shrink as deals advance. Absent on pre-V3 snapshots. */
+  demos?: { scheduled: number; completed: number };
 }
 
 /**
@@ -367,12 +383,32 @@ export interface RepFunnel {
   scheduled_at_risk: number;
 }
 
+/**
+ * Active/inactive segregation of the rep's ATTRIBUTED deals (SDR: sdr_owner; AE: hubspot_owner_id),
+ * by CURRENT stage. active splits into the two motions: pre-demo (SDR, MQL→Demo Rescheduled) and
+ * post-demo (AE, Demo Done→Contract Initiated). parked = Future Prospect (shelved by decision);
+ * won includes Transferred-to-CS (successful exit); lost = drop-offs + Non SAL. `total` counts all
+ * attributed Auto-Pipeline deals, including out-of-funnel stages ("other"), so it can exceed the
+ * bucket sum. Period-independent.
+ */
+export interface RepPipeline {
+  total: number;
+  active: number;
+  active_pre_demo: number;
+  active_post_demo: number;
+  parked: number;
+  won: number;
+  lost: number;
+  by_stage: Partial<Record<DealStageKey, number>>; // ACTIVE deals by current stage
+}
+
 export interface RepData {
   periods: Record<PeriodKey, PeriodMetrics>;
   daily: DailyPoint[]; // one point per ET day in the (short) window
   book: BookCoverage; // cumulative owned-book coverage — period-independent
   monthly: MonthMetrics[]; // last 3 US/Eastern months, newest first
   funnel: RepFunnel; // deal-driven Demo Pending / Scheduled / Done over the owned book
+  pipeline?: RepPipeline; // active/inactive deal segregation (absent on pre-V3 snapshots)
 }
 
 export interface Snapshot {
