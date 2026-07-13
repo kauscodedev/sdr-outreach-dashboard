@@ -17,13 +17,17 @@ export interface DealListItem {
   ae_owner_id: string | null;
   ae_name: string | null;
   entered_stage_ms: number | null; // when it entered its CURRENT stage (ledger)
-  demo_scheduled_for_ms: number | null;
+  created_ms: number | null; // createdate
+  demo_scheduled_for_ms: number | null; // the SDR's commitment date
+  expected_close_ms: number | null; // the AE's commitment date (expected_contract_closure_date)
   last_activity_ms: number | null; // company-level last activity
 }
 
 export interface DealFunnelPayload {
   lens: string;
-  total: number; // all matching deals (lists below are capped per stage)
+  window: number | "all"; // days the funnel is scoped to (deal start date)
+  total: number; // matching deals in the window (lists below are capped per stage)
+  undated: number; // deals excluded from the window for lack of any start date
   funnel: {
     stages: Record<string, { count: number; amount: number }>; // keyed by DealStageKey
     lost: { count: number; amount: number };

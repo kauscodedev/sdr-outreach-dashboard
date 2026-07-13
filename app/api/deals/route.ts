@@ -31,6 +31,23 @@ const lensMatch = (d: Deal, lens: string, owners: Set<string> | null): boolean =
   return lens === "sdr" ? sdrHit : lens === "ae" ? aeHit : sdrHit || aeHit;
 };
 
+/** When the deal STARTED — createdate, else its earliest ledger entry, else the stage-date
+ *  columns. Windows the funnel (historical all-stage pulls are noise). */
+function dealStartMs(d: Deal): number | null {
+  if (d.createdMs != null) return d.createdMs;
+  let min: number | null = null;
+  for (const e of d.stageEvents ?? []) if (min == null || e.enteredMs < min) min = e.enteredMs;
+  return min ?? d.discoveryDoneMs ?? d.demoDoneMs ?? null;
+}
+
+/** Display bucket: HubSpot post-sales data is unreliable, so the funnel tracks deals only UNTIL
+ *  Contract Closed — payment/CS stages fold into it. Lost stays merged; `other` is out. */
+function bucketOf(d: Deal): string | null {
+  if (isLost(d.stageKey)) return "lost";
+  if (isWon(d.stageKey) || d.stageKey === "transferred_cs") return "contract_closed";
+  return d.stageKey === "other" ? null : d.stageKey;
+}
+
 /** When the deal entered its current stage — the latest ledger entry matching it. */
 function enteredCurrentStageMs(d: Deal): number | null {
   let ms: number | null = null;
@@ -52,20 +69,36 @@ export async function GET(req: NextRequest) {
   // Scope defaults to every tracked owner; an explicit list intersects with tracked.
   const owners = requested.length ? new Set(requested.filter((id) => tracked.has(id))) : tracked;
 
-  const all = await loadDealsWithEvents();
-  const deals = all.filter((d) => lensMatch(d, lens, owners));
+  // Window: deals STARTED in the last N days (default 90 — historical all-stage pulls are
+  // noise). "all" disables. Deals with no derivable start date are excluded (counted honestly).
+  const windowParam = sp.get("window") ?? "90";
+  const windowDays = windowParam === "all" ? null : Math.max(1, Number(windowParam) || 90);
+  const cutoff = windowDays == null ? null : Date.now() - windowDays * 86_400_000;
 
-  // Current-state funnel: deals sitting in each stage now (+ merged Lost block).
+  const all = await loadDealsWithEvents();
+  const matching = all.filter((d) => lensMatch(d, lens, owners));
+  let undated = 0;
+  const deals = cutoff == null ? matching : matching.filter((d) => {
+    const start = dealStartMs(d);
+    if (start == null) { undated++; return false; }
+    return start >= cutoff;
+  });
+
+  // Current-state funnel over the windowed set. Post-sales stages (payment/CS) fold into
+  // contract_closed — the funnel tracks deals only UNTIL Contract Closed.
   const stages: Record<string, { count: number; amount: number }> = {};
-  for (const k of FUNNEL_STAGES) stages[k] = { count: 0, amount: 0 };
+  for (const k of FUNNEL_STAGES) {
+    if (k === "payment_completed" || k === "transferred_cs") continue;
+    stages[k] = { count: 0, amount: 0 };
+  }
   const lost = { count: 0, amount: 0 };
   for (const d of deals) {
-    if (isLost(d.stageKey)) { lost.count++; lost.amount += d.amount ?? 0; }
-    else if (stages[d.stageKey]) { stages[d.stageKey].count++; stages[d.stageKey].amount += d.amount ?? 0; }
-    // stageKey "other" (out-of-funnel Auto stages) is excluded from the strip by design.
+    const b = bucketOf(d);
+    if (b === "lost") { lost.count++; lost.amount += d.amount ?? 0; }
+    else if (b && stages[b]) { stages[b].count++; stages[b].amount += d.amount ?? 0; }
   }
 
-  // Flow conversion (event truth over the whole ledger, independent of current stage):
+  // Flow conversion (event truth over the windowed cohort's ledgers):
   // ever scheduled → ever completed → ever reached contract → won.
   const flow = { scheduled: 0, completed: 0, contract: 0, won: 0 };
   for (const d of deals) {
@@ -79,8 +112,8 @@ export async function GET(req: NextRequest) {
   // Per-stage lists: longest-in-stage first (what's stuck surfaces on top), capped per bucket.
   const byBucket = new Map<string, Deal[]>();
   for (const d of deals) {
-    const bucket = isLost(d.stageKey) ? "lost" : d.stageKey;
-    if (bucket === "other") continue;
+    const bucket = bucketOf(d);
+    if (!bucket) continue;
     const list = byBucket.get(bucket) ?? [];
     list.push(d);
     byBucket.set(bucket, list);
@@ -124,16 +157,21 @@ export async function GET(req: NextRequest) {
       ae_owner_id: d.dealOwnerId,
       ae_name: d.dealOwnerId ? names[d.dealOwnerId] ?? null : null,
       entered_stage_ms: enteredCurrentStageMs(d),
+      created_ms: d.createdMs ?? null,
       demo_scheduled_for_ms: d.demoScheduledForMs,
+      expected_close_ms: d.expectedCloseMs ?? null,
       last_activity_ms: co?.last_activity_ms ?? null,
     };
   });
 
   return NextResponse.json({
     lens,
+    window: windowDays ?? "all",
     total: deals.length,
+    undated, // deals excluded from the window for lack of any start date
     funnel: { stages, lost, flow },
-    forecast: computeForecast(deals), // resolved-cohort conversion + velocity + expected value
+    // Conversion cohorts stay FULL-history (stable rates); $ numbers follow the window.
+    forecast: computeForecast(matching, deals),
     deals: items,
     list_cap: LIST_CAP,
   });

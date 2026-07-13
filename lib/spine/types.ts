@@ -62,7 +62,9 @@ export interface DealRow {
   company_id: string | null; // primary associated company
   contact_ids: string[];
   amount: number | null;
+  created_ms: number | null; // createdate
   demo_scheduled_for_ms: number | null;
+  expected_close_ms: number | null; // expected_contract_closure_date
   discovery_done_ms: number | null;
   demo_done_ms: number | null;
   is_closed_won: boolean; // derived at write time from stage_key (query convenience)

@@ -183,11 +183,17 @@ export interface StoreForAggregate {
  *  sdr_deal_stage_events → deals without ledgers (metrics fall back to stage-date columns).
  *  Shared by the aggregate load and the /api/metrics/range route. */
 export async function loadDealsWithEvents(): Promise<Deal[]> {
+  const COLS_BASE = "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost";
+  const COLS_V31 = COLS_BASE.replace("amount,", "amount,created_ms,").replace("demo_scheduled_for_ms,", "demo_scheduled_for_ms,expected_close_ms,");
   let dealRows: DealRow[] = [];
   try {
-    dealRows = await fetchAllParallel<DealRow>("sdr_deals",
-      "hs_id,pipeline,dealstage,stage_key,deal_owner_id,sdr_owner_id,company_id,contact_ids,amount,demo_scheduled_for_ms,discovery_done_ms,demo_done_ms,is_closed_won,is_closed_lost",
-      ["hs_id"]);
+    try {
+      dealRows = await fetchAllParallel<DealRow>("sdr_deals", COLS_V31, ["hs_id"]);
+    } catch {
+      // created_ms / expected_close_ms absent (V3.1 ALTERs not applied yet) — read without them.
+      console.warn("[spine] sdr_deals V3.1 columns unavailable — reading without created_ms/expected_close_ms until the migration is applied");
+      dealRows = await fetchAllParallel<DealRow>("sdr_deals", COLS_BASE, ["hs_id"]);
+    }
   } catch (e) {
     console.warn(`[spine] sdr_deals unavailable (${e instanceof Error ? e.message : e}) — aggregating without deals until the V2 migration is applied`);
   }

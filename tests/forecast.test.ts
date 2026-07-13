@@ -65,4 +65,14 @@ describe("computeForecast — resolved-cohort conversion + velocity + expected v
     const f2 = computeForecast([deal({ id: "old", stageKey: "demo_done" })]);
     expect(f2.by_stage.demo_done!.entered).toBe(1);
   });
+
+  it("splits cohorts from actives: rates from full history, $ from the windowed set", () => {
+    const windowedActive = deal({ id: "w", stageKey: "in_discussion", amount: 4_000 });
+    const outsideActive = deal({ id: "o", stageKey: "in_discussion", amount: 100_000 });
+    const f3 = computeForecast([...resolved, windowedActive, outsideActive], [windowedActive]);
+    expect(f3.by_stage.in_discussion!.conversion).toBeCloseTo(0.6); // full-history cohort
+    expect(f3.active_total).toBe(1); // only the windowed deal counts toward $
+    expect(f3.pipeline_amount).toBe(4_000);
+    expect(f3.expected_value).toBeCloseTo(2_400);
+  });
 });

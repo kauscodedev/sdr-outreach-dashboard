@@ -71,7 +71,9 @@ export interface Deal {
   companyId: string | null; // primary associated company
   contactIds: string[];
   amount: number | null;
-  demoScheduledForMs: number | null; // demo_scheduled_for_date — the meeting date
+  createdMs?: number | null; // createdate — windows the funnel (absent pre-migration)
+  demoScheduledForMs: number | null; // demo_scheduled_for_date — the SDR's commitment date
+  expectedCloseMs?: number | null; // expected_contract_closure_date — the AE's commitment date
   discoveryDoneMs: number | null; // discovery_call_done_stage_date
   demoDoneMs: number | null; // demo_done_stage_date
   stageEvents?: DealStageEvent[]; // stage-event ledger, entered_ms asc (absent pre-V3)

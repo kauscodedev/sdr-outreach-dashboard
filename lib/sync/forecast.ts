@@ -40,7 +40,13 @@ function median(xs: number[]): number | null {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-export function computeForecast(deals: Deal[]): Forecast {
+/**
+ * @param deals       the conversion/velocity cohort — pass FULL history here so rates stay stable
+ *                    when the UI narrows its window
+ * @param activeDeals the set expected value + pipeline are computed over (defaults to `deals`) —
+ *                    pass the WINDOWED view so the $ numbers match what's on screen
+ */
+export function computeForecast(deals: Deal[], activeDeals: Deal[] = deals): Forecast {
   const acc = new Map<DealStageKey, { entered: number; resolved: number; won: number; stays: number[] }>();
   for (const k of FUNNEL_STAGES) acc.set(k, { entered: 0, resolved: 0, won: 0, stays: [] });
 
@@ -75,7 +81,7 @@ export function computeForecast(deals: Deal[]): Forecast {
   }
 
   let active_total = 0, active_with_amount = 0, pipeline_amount = 0, expected_value = 0;
-  for (const d of deals) {
+  for (const d of activeDeals) {
     if (!isActive(d.stageKey)) continue;
     active_total++;
     if (d.amount == null) continue;

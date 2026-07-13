@@ -57,7 +57,8 @@ describe("deal mappers", () => {
   const deal: Deal = {
     id: "d1", pipeline: AUTO_PIPELINE_ID, dealstage: "1534611154", stageKey: "in_discussion",
     dealOwnerId: "ae1", sdrOwnerId: "sdr1", companyId: "co1", contactIds: ["c1", "c2"],
-    amount: 5000, demoScheduledForMs: 111, discoveryDoneMs: 222, demoDoneMs: 333,
+    amount: 5000, createdMs: 100, demoScheduledForMs: 111, expectedCloseMs: 444,
+    discoveryDoneMs: 222, demoDoneMs: 333,
   };
 
   it("round-trips an in-funnel deal through the row shape", () => {
@@ -65,7 +66,8 @@ describe("deal mappers", () => {
     expect(row).toMatchObject({
       hs_id: "d1", pipeline: AUTO_PIPELINE_ID, dealstage: "1534611154", stage_key: "in_discussion",
       deal_owner_id: "ae1", sdr_owner_id: "sdr1", company_id: "co1", contact_ids: ["c1", "c2"],
-      amount: 5000, demo_scheduled_for_ms: 111, discovery_done_ms: 222, demo_done_ms: 333,
+      amount: 5000, created_ms: 100, demo_scheduled_for_ms: 111, expected_close_ms: 444,
+      discovery_done_ms: 222, demo_done_ms: 333,
       is_closed_won: false, is_closed_lost: false, hs_lastmodified_ms: 999,
     });
     expect(rowToDeal(row)).toEqual(deal);

@@ -10,11 +10,11 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, ExternalLink, History, ChevronRight } from "lucide-react";
-import { DealStageKey, stageOrder, stageLabel } from "../config/deal-stages";
+import { DealStageKey, stageOrder, stageLabel, isMeetingSet, isActive } from "../config/deal-stages";
 import { DealFunnelPayload, DealListItem } from "../lib/sync/deal-funnel";
 import { Forecast } from "../lib/sync/forecast";
 import { companyUrl, dealUrl } from "../config/hubspot";
-import { Surface, SortHeader, DealHealthBadge, cn } from "./ui";
+import { Surface, SortHeader, DealHealthBadge, Segmented, cn } from "./ui";
 
 const fmt = (n: number) => n.toLocaleString("en-IN");
 const usd = (n: number) =>
@@ -51,17 +51,17 @@ const LANES: { title: string; tint: string; stages: { key: DealStageKey; label: 
     ],
   },
   {
+    // HubSpot post-sales data is unreliable — the funnel tracks deals only UNTIL Contract
+    // Closed (payment/CS stages fold into this card server-side).
     title: "Closed", tint: "text-good",
     stages: [
       { key: "contract_closed", label: "Contract Closed" },
-      { key: "payment_completed", label: "Payment Done" },
-      { key: "transferred_cs", label: "→ CS" },
     ],
   },
 ];
 
 type Bucket = DealStageKey | "lost" | "all";
-type SortKey = "company" | "stage" | "health" | "amount" | "sdr" | "ae" | "in_stage" | "last";
+type SortKey = "company" | "stage" | "health" | "amount" | "sdr" | "ae" | "in_stage" | "demo_date" | "exp_close" | "last";
 
 const HEALTH_RANK: Record<string, number> = { red: 0, yellow: 1, green: 2 };
 
@@ -73,20 +73,21 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
   const [data, setData] = useState<DealFunnelPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bucket, setBucket] = useState<Bucket>("all");
+  const [window_, setWindow] = useState<string>("90"); // deal-start window (days | "all")
   const [sortKey, setSortKey] = useState<SortKey>("in_stage");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
     let live = true;
     setData(null); setError(null); setBucket("all");
-    const q = new URLSearchParams({ lens });
+    const q = new URLSearchParams({ lens, window: window_ });
     if (owners.length) q.set("owners", owners.join(","));
     fetch(`/api/deals?${q}`)
       .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error ?? r.statusText); return r.json(); })
       .then((d) => live && setData(d))
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)));
     return () => { live = false; };
-  }, [owners.join(","), lens]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owners.join(","), lens, window_]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => {
     if (!data) return [] as DealListItem[];
@@ -102,6 +103,8 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
       sdr: (d.sdr_name ?? "").toLowerCase(),
       ae: (d.ae_name ?? "").toLowerCase(),
       in_stage: d.entered_stage_ms ? -d.entered_stage_ms : 1, // older entry = larger "days in stage"
+      demo_date: d.demo_scheduled_for_ms ?? Number.MAX_SAFE_INTEGER, // asc = soonest first
+      exp_close: d.expected_close_ms ?? Number.MAX_SAFE_INTEGER,
       last: d.last_activity_ms ?? 0,
     }[sortKey]);
     return [...list].sort((a, b) => {
@@ -130,11 +133,18 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
       {/* Stage-wise breakdown: three lanes + exits */}
       <Surface className="p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-subtle">Pipeline by stage · {fmt(data.total)} deals</span>
-          <button onClick={() => setBucket("all")}
-            className={cn("rounded-lg px-2.5 py-1 text-xs font-semibold transition", bucket === "all" ? "bg-ink text-white" : "bg-surface-muted text-ink-muted hover:text-ink")}>
-            All stages
-          </button>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-subtle">
+            Pipeline by stage · {fmt(data.total)} deals
+            {data.window !== "all" && <span className="normal-case"> started in the last {data.window}d{data.undated > 0 ? ` · ${fmt(data.undated)} undated excluded` : ""}</span>}
+          </span>
+          <div className="flex items-center gap-2">
+            <Segmented options={[["30", "30d"], ["90", "90d"], ["180", "180d"], ["all", "All time"]]}
+              value={window_} onChange={setWindow} />
+            <button onClick={() => setBucket("all")}
+              className={cn("rounded-lg px-2.5 py-1 text-xs font-semibold transition", bucket === "all" ? "bg-ink text-white" : "bg-surface-muted text-ink-muted hover:text-ink")}>
+              All stages
+            </button>
+          </div>
         </div>
         <div className="grid gap-3 lg:grid-cols-[4fr_4fr_3fr]">
           {LANES.map((lane) => (
@@ -194,7 +204,7 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
         </div>
         {rows.length === 0 ? <p className="p-5 text-sm text-ink-subtle">No deals in this bucket.</p> : (
           <div className="scroll-x">
-            <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <table className="w-full min-w-[1280px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-line bg-surface-muted text-[11px] font-semibold uppercase tracking-wide">
                   <SortHeader onClick={() => toggleSort("company")} active={sortKey === "company"} dir={sortDir}>Account / Deal</SortHeader>
@@ -204,6 +214,8 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
                   <SortHeader onClick={() => toggleSort("sdr")} active={sortKey === "sdr"} dir={sortDir}>SDR</SortHeader>
                   <SortHeader onClick={() => toggleSort("ae")} active={sortKey === "ae"} dir={sortDir}>AE</SortHeader>
                   <SortHeader right onClick={() => toggleSort("in_stage")} active={sortKey === "in_stage"} dir={sortDir}>In stage</SortHeader>
+                  <SortHeader right onClick={() => toggleSort("demo_date")} active={sortKey === "demo_date"} dir={sortDir}>Demo date</SortHeader>
+                  <SortHeader right onClick={() => toggleSort("exp_close")} active={sortKey === "exp_close"} dir={sortDir}>Exp. close</SortHeader>
                   <SortHeader right onClick={() => toggleSort("last")} active={sortKey === "last"} dir={sortDir}>Last activity</SortHeader>
                   <th className="px-3 py-2" />
                 </tr>
@@ -229,6 +241,24 @@ export default function DealFunnel({ owners, lens, onTimeline }: {
                       <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
                         {days == null ? <span className="text-ink-subtle">—</span>
                           : <span className={cn(days > 30 ? "font-bold text-hot" : days > 14 ? "font-semibold text-warm" : "text-ink-muted")}>{days}d</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                        {/* The SDR's commitment date — overdue (demo in the past, still meeting-set) burns red */}
+                        {d.demo_scheduled_for_ms
+                          ? <span className={cn(d.demo_scheduled_for_ms < Date.now() && isMeetingSet(d.stage_key) ? "font-bold text-hot" : "text-ink-muted")}
+                              title={d.demo_scheduled_for_ms < Date.now() && isMeetingSet(d.stage_key) ? "Demo date passed — reschedule or advance" : undefined}>
+                              {etDate(d.demo_scheduled_for_ms)}
+                            </span>
+                          : <span className="text-ink-subtle">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
+                        {/* The AE's commitment date — overdue (past, deal still active) burns red */}
+                        {d.expected_close_ms
+                          ? <span className={cn(d.expected_close_ms < Date.now() && isActive(d.stage_key) ? "font-bold text-hot" : "text-ink-muted")}
+                              title={d.expected_close_ms < Date.now() && isActive(d.stage_key) ? "Expected close passed — update the date or close" : undefined}>
+                              {etDate(d.expected_close_ms)}
+                            </span>
+                          : <span className="text-ink-subtle">—</span>}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs tabular-nums text-ink-muted">{etDate(d.last_activity_ms)}</td>
                       <td className="px-3 py-2 text-right">

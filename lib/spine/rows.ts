@@ -48,7 +48,10 @@ export function dealToRow(d: Deal, lastModifiedMs: number | null): DealRow {
     hs_id: d.id, pipeline: d.pipeline, dealstage: d.dealstage, stage_key: key,
     deal_owner_id: d.dealOwnerId, sdr_owner_id: d.sdrOwnerId, company_id: d.companyId,
     contact_ids: d.contactIds, amount: d.amount,
-    demo_scheduled_for_ms: d.demoScheduledForMs, discovery_done_ms: d.discoveryDoneMs,
+    created_ms: d.createdMs ?? null,
+    demo_scheduled_for_ms: d.demoScheduledForMs,
+    expected_close_ms: d.expectedCloseMs ?? null,
+    discovery_done_ms: d.discoveryDoneMs,
     demo_done_ms: d.demoDoneMs, is_closed_won: isWon(key), is_closed_lost: isLost(key),
     hs_lastmodified_ms: lastModifiedMs,
   };
@@ -60,7 +63,9 @@ export function rowToDeal(r: DealRow): Deal {
     stageKey: stageKey(r.pipeline, r.dealstage), // recompute — the mapping stays the source of truth
     dealOwnerId: r.deal_owner_id, sdrOwnerId: r.sdr_owner_id, companyId: r.company_id,
     contactIds: arr(r.contact_ids), amount: r.amount == null ? null : Number(r.amount),
+    createdMs: r.created_ms == null ? null : Number(r.created_ms),
     demoScheduledForMs: r.demo_scheduled_for_ms == null ? null : Number(r.demo_scheduled_for_ms),
+    expectedCloseMs: r.expected_close_ms == null ? null : Number(r.expected_close_ms),
     discoveryDoneMs: r.discovery_done_ms == null ? null : Number(r.discovery_done_ms),
     demoDoneMs: r.demo_done_ms == null ? null : Number(r.demo_done_ms),
   };

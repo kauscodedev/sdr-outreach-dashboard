@@ -433,7 +433,9 @@ export interface RawDeal {
   dealOwnerId: string | null;
   sdrOwnerId: string | null;
   amount: number | null;
+  createdMs: number | null; // createdate — windows the funnel (90d default)
   demoScheduledForMs: number | null;
+  expectedCloseMs: number | null; // expected_contract_closure_date — the AE's commitment date
   discoveryDoneMs: number | null;
   demoDoneMs: number | null;
   stageEvents: DealStageEvent[]; // per-stage entered/exited (hs_v2 calculated properties)
@@ -442,8 +444,9 @@ export interface RawDeal {
 
 // Stage-date (hs_v2) properties → the sdr_deal_stage_events ledger; see lib/sync/stage-events.ts.
 const DEAL_DELTA_PROPERTIES = [
-  "pipeline", "dealstage", "hubspot_owner_id", "sdr_owner", "amount",
-  "demo_scheduled_for_date", "discovery_call_done_stage_date", "demo_done_stage_date",
+  "pipeline", "dealstage", "hubspot_owner_id", "sdr_owner", "amount", "createdate",
+  "demo_scheduled_for_date", "expected_contract_closure_date",
+  "discovery_call_done_stage_date", "demo_done_stage_date",
   "hs_lastmodifieddate",
   ...STAGE_DATE_PROPERTIES,
 ];
@@ -475,7 +478,9 @@ export async function pullChangedDeals(sinceMs: number, maxWindows?: number, own
     dealOwnerId: r.properties.hubspot_owner_id ?? null,
     sdrOwnerId: r.properties.sdr_owner ?? null,
     amount: amountOf(r.properties.amount),
+    createdMs: toMs(r.properties.createdate ?? null) || null,
     demoScheduledForMs: toMs(r.properties.demo_scheduled_for_date ?? null) || null,
+    expectedCloseMs: toMs(r.properties.expected_contract_closure_date ?? null) || null,
     discoveryDoneMs: toMs(r.properties.discovery_call_done_stage_date ?? null) || null,
     demoDoneMs: toMs(r.properties.demo_done_stage_date ?? null) || null,
     stageEvents: stageEventsOf(r.properties),

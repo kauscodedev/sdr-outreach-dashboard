@@ -84,6 +84,12 @@ create index if not exists idx_sdr_deals_owner on sdr_deals(deal_owner_id);
 create index if not exists idx_sdr_deals_sdr on sdr_deals(sdr_owner_id);
 create index if not exists idx_sdr_deals_stage on sdr_deals(stage_key);
 
+-- V3.1: deal windowing + commitment dates. created_ms (createdate) windows the funnel (90d
+-- default — historical all-stage pulls are noise); demo_scheduled_for is the SDR's commitment
+-- date (already a column above), expected_close_ms (expected_contract_closure_date) is the AE's.
+alter table sdr_deals add column if not exists created_ms bigint;
+alter table sdr_deals add column if not exists expected_close_ms bigint;
+
 -- V3: deal stage-event ledger — WHEN each deal entered/exited each canonical stage. This is the
 -- event-truth layer under the period funnel metrics ("demos scheduled/completed in period P"),
 -- stage velocity, and forecasting. Populated from HubSpot's built-in calculated properties
