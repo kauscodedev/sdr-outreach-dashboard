@@ -67,7 +67,8 @@ mappers (`stage-events.test.ts`), demo-status segmentation (`segmentation.test.t
 (`deal-health.test.ts`), call-quality mappers (`callquality.test.ts`), spine row mappers incl. deal
 mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the agent detector
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
-(`agent-ranking.test.ts`), and the auth-domain rule (`auth-domain.test.ts`) — 16 files in all. Never
+(`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), and the pod/team filter
+options (`team-filters.test.ts`) — 17 files in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -108,6 +109,8 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   app/admin      control center: add/update users (email→owner), roster + soft-delete, manage pods/managers, roles, sync health   (admin only)
   app/attention  hot-account task list (AttentionBoard / AttentionBoardEnhanced) ← sdr_agent_watches
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
+  app/api/metrics/range   arbitrary from–to ET window → aggregateRange over the spine (V3; same
+                          pure engine as the fixed periods; 190-day cap; session-gated like all /api)
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
 
 scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)
@@ -293,11 +296,18 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   from `RepData.funnel`, links into `/accounts`) + an **SDR/AE toggle** (managers/admins only —
   `viewer.isAdmin || role manager|leadership` — filters reps via `snapshot.owner_kinds`). Clicking a rep
   row opens `RepDrawer` (children-based to avoid an import cycle) containing `Scorecard`. **Guard** reads
-  of `RepData.funnel` / `owner_kinds` — absent on a pre-V2 snapshot.
+  of `RepData.funnel` / `owner_kinds` — absent on a pre-V2 snapshot; `m.demos` / `data.pipeline` —
+  absent on a pre-V3 one. **V3 additions:** an **AE Pod / SDR Team dropdown** (options built
+  server-side by `teamFilterOptions` in `lib/team/helpers.ts` and passed as the `teamFilters` prop —
+  Overview + Accounts both), a **from–to date-range picker** (swaps the table/tiles to
+  `/api/metrics/range` results; period chips deselect), a sortable **Demos** column + per-rep
+  **Funnel** cells deep-linking to `/accounts?lens&bucket&rep`, and a **PipelineCard** in the drawer.
 - **Accounts** `components/Accounts.tsx` (client, `/accounts`): owned book by demo-status
   (Pending/Scheduled/Done tabs from `funnel`), per-rep **lazy-loaded** units via `/api/rep/[ownerId]/book`,
   grouped GD→rooftop with `DealHealthBadge`/`TempBadge` + demo-status chip + last-activity, expandable to
-  contacts. **AE view currently reuses the owned-book buckets** — a true deal-owner ("In Discussion")
+  contacts. **V3:** pod/team dropdown (narrows the rep picker), column filters (Health incl. a
+  "no deal — Temp governs" bucket, Temp, GD Stage, Segment), and a `rep` deep-link param; the
+  drawer's Book Explorer (`GdExplorer`) gains matching Stage/Segment/Temp selects. **AE view currently reuses the owned-book buckets** — a true deal-owner ("In Discussion")
   cross-cut needs a deal-owner rollup in the aggregator (follow-up).
 - **Reused table** `components/AccountsTable.tsx` (`UnitsTable` → `RooftopsTable` → `ContactsTable`) still
   backs the **Book Explorer** (`GdExplorer`) and "Accounts tapped this period". Temperature tiles +
