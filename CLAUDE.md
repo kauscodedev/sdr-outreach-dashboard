@@ -372,6 +372,18 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   agentic when the account is indexed (search_account_history over the WHOLE history, 5-search
   budget) and single-shot otherwise. Model `OPENAI_MODEL` (default `gpt-4o-mini`);
   `OPENAI_EMBED_MODEL` (default `text-embedding-3-small`, 1536-dim — must match `vector(1536)`).
+- **Vector bulk-load procedure (learned the hard way):** with the HNSW index in place, vector
+  inserts pay graph maintenance that grows with the index — writes started tripping
+  `statement_timeout` past ~30k nodes even at 8 rows/statement. For bulk loads: drop
+  `idx_sdr_emb_vec`, run `EMBED_WRITE_BATCH=96 npm run embed:content` (plain heap inserts, ~10×),
+  then rebuild the index ONCE. The Supabase dashboard's SQL editor has its own gateway timeout
+  (ignores `statement_timeout`) — an HNSW build over the full corpus exceeds it; use IVFFlat
+  (`using ivfflat ... with (lists = 100)`, builds in seconds) or run HNSW via a direct DB
+  connection. Search works index-less (~5s seq scan) — the agent tolerates it. Deletes on
+  `sdr_embeddings` must also be chunked (single-statement bulk deletes time out).
+  Grounding fed to models: email bodies are pulled (`hs_email_text` → `email_body`, reply chains
+  stripped by `cleanEmailBody`) and BANTIC analysis from the call-scoring tables rides the brief
+  prompt (`buildBriefUser`).
 - **Timeline grounding gotchas (fixed, don't regress):** `loadTimelineForAccount` must fetch
   newest-first then present chronologically (ascending+limit = the OLDEST slice), must map
   dispositions to labels (models can't read GUIDs), and every jsonb `contains` on `company_ids`
