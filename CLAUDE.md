@@ -48,6 +48,7 @@ non-obvious conventions that span multiple files.
 | `npm run content:backfill` | **Opt-in** pull of call notes/transcripts/email subjects → `sdr_activity_content` (kept OFF the delta path) |
 | `npm run agent:run` | One hot-account agent pass (OpenAI reasoning → `sdr_agent_watches`); needs `OPENAI_API_KEY` |
 | `npm run agent:briefs` | Refresh grounded Account Briefs for watched accounts (timeline + content + deals → `sdr_agent_briefs`); needs `OPENAI_API_KEY`; runs as the 2nd step of `spine-agent.yml` |
+| `npm run embed:content` | Index new `sdr_activity_content` rows into `sdr_embeddings` (pgvector; idempotent, new rows only); needs `OPENAI_API_KEY`; runs nightly after `content:backfill` in `spine-reconcile.yml` |
 
 All non-`dev`/`build`/`lint`/`test` scripts run via `tsx --conditions=react-server` — required so
 the `server-only` guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node. Scripts
@@ -364,7 +365,13 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   every reasoner shares**), `store.ts` (`sdr_agent_watches`/`sdr_agent_notes`/`sdr_activity_content`),
   `runner.ts` (`runAgent`, caps ~25 accounts/run), **`briefs.ts` (V3 §7.2: grounded Account Briefs —
   summary/stakeholders/signals/objections each with dated evidence + next step → `sdr_agent_briefs`,
-  stale-refresh ~20h, `runBriefs` caps 15/run)**. Model `OPENAI_MODEL` (default `gpt-4o-mini`).
+  stale-refresh ~20h, `runBriefs` caps 15/run)**, **`embed-chunks.ts` (pure, tested: what earns a
+  vector) + `embeddings.ts` (index/search over `sdr_embeddings` pgvector via the `sdr_search_content`
+  RPC; `hasIndexedContent` gates the loop) + `toolloop.ts` (V3 §7.3: generic read-tools loop — the
+  model MUST finish via the submit tool, whose args ARE the structured output)**. Brief generation is
+  agentic when the account is indexed (search_account_history over the WHOLE history, 5-search
+  budget) and single-shot otherwise. Model `OPENAI_MODEL` (default `gpt-4o-mini`);
+  `OPENAI_EMBED_MODEL` (default `text-embedding-3-small`, 1536-dim — must match `vector(1536)`).
 - **Timeline grounding gotchas (fixed, don't regress):** `loadTimelineForAccount` must fetch
   newest-first then present chronologically (ascending+limit = the OLDEST slice), must map
   dispositions to labels (models can't read GUIDs), and every jsonb `contains` on `company_ids`
