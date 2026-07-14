@@ -415,11 +415,22 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   inserts pay graph maintenance that grows with the index — writes started tripping
   `statement_timeout` past ~30k nodes even at 8 rows/statement. For bulk loads: drop
   `idx_sdr_emb_vec`, run `EMBED_WRITE_BATCH=96 npm run embed:content` (plain heap inserts, ~10×),
-  then rebuild the index ONCE. The Supabase dashboard's SQL editor has its own gateway timeout
-  (ignores `statement_timeout`) — an HNSW build over the full corpus exceeds it; use IVFFlat
-  (`using ivfflat ... with (lists = 100)`, builds in seconds) or run HNSW via a direct DB
-  connection. Search works index-less (~5s seq scan) — the agent tolerates it. Deletes on
+  then rebuild the index ONCE **and `analyze sdr_embeddings`** (an index build doesn't refresh
+  stats; stale stats after a bulk load kept the planner on seq scans). The Supabase dashboard's
+  SQL editor has its own gateway timeout (ignores `statement_timeout`) — at this corpus size even
+  an IVFFlat build exceeds it on the loaded Free-tier compute (~12 min); build via a **direct DB
+  connection** (`SUPABASE_DB_URL` in `.env.local`, Session-pooler string, `set statement_timeout
+  = 0`). Do NOT assume index-less search "works slowly": through PostgREST it dies on the role's
+  8s `statement_timeout` and returns 0 hits silently. Deletes on
   `sdr_embeddings` must also be chunked (single-statement bulk deletes time out).
+- **`sdr_search_content` MUST stay plpgsql two-branch (fixed 2026-07-14, don't regress).** The
+  old `language sql` + `where p_account_id is null or account_id = p_account_id` version inlines
+  into PostgREST's `LATERAL json_to_record` call shape, where the ORDER BY key is a lateral
+  column — Postgres can't drive a KNN ivfflat scan from that, so EVERY RPC search seq-scanned
+  66k vectors: corpus-wide timed out (0 hits, silently — graceful catch), scoped crawled ~5s.
+  Direct-connection testing hides this (plain Params inline fine, 12ms) — always verify through
+  the PostgREST path. The plpgsql branches also keep scoped search EXACT (btree account index +
+  sort) instead of ivfflat KNN-then-filter, which starves small accounts of results.
   Grounding fed to models: email bodies are pulled (`hs_email_text` → `email_body`, reply chains
   stripped by `cleanEmailBody`) and BANTIC analysis from the call-scoring tables rides the brief
   prompt (`buildBriefUser`).

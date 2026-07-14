@@ -230,18 +230,41 @@ create index if not exists idx_sdr_emb_vec on sdr_embeddings using ivfflat (embe
 
 -- Cosine similarity search (PostgREST can't express vector operators — RPC required).
 -- p_account_id null = whole corpus; else scoped to one account's history.
+--
+-- MUST stay plpgsql with two branches (fixed 2026-07-14, applied live). The original
+-- `language sql ... where p_account_id is null or account_id = p_account_id` version inlines
+-- into PostgREST's `LATERAL json_to_record(...)` call shape, where the ORDER BY key becomes a
+-- lateral column reference — Postgres can't drive a KNN (ivfflat) index scan from that, so
+-- every RPC call seq-scanned 66k vectors and corpus-wide search died on the role's 8s
+-- statement_timeout (0 hits, silently). plpgsql plans the body with plain executor Params →
+-- corpus-wide gets the ivfflat scan; the scoped branch filters on idx_sdr_emb_account + sorts
+-- exactly, which both avoids the seq scan AND sidesteps ivfflat post-filter starvation
+-- (KNN-then-filter can return <limit rows for small accounts). Verified via PostgREST:
+-- ~10s timeout → ~0.6s both branches.
 create or replace function sdr_search_content(
   p_query vector(1536),
   p_account_id text default null,
   p_limit int default 8
 ) returns table (hs_id text, account_id text, ts_ms bigint, kind text, chunk text, similarity float)
-language sql stable as $$
-  select e.hs_id, e.account_id, e.ts_ms, e.kind, e.chunk,
-         1 - (e.embedding <=> p_query) as similarity
-  from sdr_embeddings e
-  where p_account_id is null or e.account_id = p_account_id
-  order by e.embedding <=> p_query
-  limit p_limit;
+language plpgsql stable as $$
+begin
+  if p_account_id is null then
+    return query
+      select e.hs_id, e.account_id, e.ts_ms, e.kind, e.chunk,
+             1 - (e.embedding <=> p_query) as similarity
+      from sdr_embeddings e
+      order by e.embedding <=> p_query
+      limit p_limit;
+  else
+    return query
+      select e.hs_id, e.account_id, e.ts_ms, e.kind, e.chunk,
+             1 - (e.embedding <=> p_query) as similarity
+      from sdr_embeddings e
+      where e.account_id = p_account_id
+      order by e.embedding <=> p_query
+      limit p_limit;
+  end if;
+end;
 $$;
 grant execute on function sdr_search_content(vector, text, int) to service_role;
 
