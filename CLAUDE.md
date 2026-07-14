@@ -71,8 +71,8 @@ mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the 
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
 (`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), the pod/team filter
 options (`team-filters.test.ts`), the account-timeline builder (`account-timeline.test.ts`),
-Forecast v1 (`forecast.test.ts`), and the integrity checks (`integrity.test.ts`) — 20 files in
-all. Never
+Forecast v1 (`forecast.test.ts`), the integrity checks (`integrity.test.ts`), and the embedding
+chunk composer (`embed-chunks.test.ts`) — 21 files / 208 tests in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
