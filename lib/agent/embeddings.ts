@@ -11,6 +11,8 @@ import { embedTexts, isConfigured } from "./openai";
 import { composeChunk, ContentFields } from "./embed-chunks";
 
 const EMBED_BATCH = 96; // texts per embeddings request
+const WRITE_BATCH = 16; // rows per DB upsert — HNSW insert cost grows with the graph, and large
+// vector writes start tripping statement_timeout once the index has tens of thousands of nodes
 const PAGE = 1000;
 
 export interface ContentHit {
@@ -118,9 +120,21 @@ export async function indexNewContent(opts: { limit?: number } = {}): Promise<In
             chunk: b.chunk,
             embedding: vectors[j],
           }));
-          const { error: upErr } = await db.from("sdr_embeddings").upsert(upserts, { onConflict: "hs_id" });
-          if (upErr) throw new Error(upErr.message);
-          indexed += batch.length;
+          // Small retried writes: one embeddings request fans out into WRITE_BATCH-row upserts
+          // so HNSW maintenance per statement stays under the pooler's statement_timeout.
+          for (let k = 0; k < upserts.length; k += WRITE_BATCH) {
+            const slice = upserts.slice(k, k + WRITE_BATCH);
+            let lastErr = "";
+            let wrote = false;
+            for (let attempt = 1; attempt <= 4 && !wrote; attempt++) {
+              const { error: upErr } = await db.from("sdr_embeddings").upsert(slice, { onConflict: "hs_id" });
+              if (!upErr) { wrote = true; break; }
+              lastErr = upErr.message;
+              await new Promise((r) => setTimeout(r, 800 * attempt));
+            }
+            if (!wrote) throw new Error(lastErr);
+            indexed += slice.length;
+          }
         } catch (e) {
           errors++;
           console.warn(`[embed] batch failed:`, (e as Error).message);
