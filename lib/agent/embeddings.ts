@@ -11,8 +11,10 @@ import { embedTexts, isConfigured } from "./openai";
 import { composeChunk, ContentFields } from "./embed-chunks";
 
 const EMBED_BATCH = 96; // texts per embeddings request
-const WRITE_BATCH = 8; // rows per DB upsert — HNSW insert cost grows with the graph, and large
-// vector writes start tripping statement_timeout once the index has tens of thousands of nodes
+// Rows per DB upsert. With the HNSW index in place, inserts pay graph maintenance that grows
+// with the index — 8 stays under statement_timeout past ~30k nodes. For bulk loads, drop the
+// index first and run with EMBED_WRITE_BATCH=96 (plain heap inserts), then rebuild it once.
+const WRITE_BATCH = Math.max(1, Number(process.env.EMBED_WRITE_BATCH) || 8);
 const PAGE = 1000;
 
 export interface ContentHit {
