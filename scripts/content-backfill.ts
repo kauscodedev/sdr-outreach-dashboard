@@ -29,15 +29,20 @@ async function backfill(type: "call" | "email", object: "calls" | "emails", prop
   const db = supabaseAdmin();
   if (!db) throw new Error("Supabase service role not configured");
   const sinceMs = Date.now() - LOOKBACK_MS;
-  // Paginated id read — a bare select is capped at PostgREST max-rows (1000), which silently
-  // truncated the backfill to 1000 activities per type.
+  // Keyset-paginated id read (hs_id > cursor walks the PK index — OFFSET pagination forced a
+  // full sort per page and tripped statement_timeout under load; a bare select is also capped
+  // at PostgREST max-rows, which once silently truncated the backfill to 1000 activities).
   const ids: string[] = [];
-  for (let from = 0; ; from += 1000) {
+  let cursor = "";
+  for (;;) {
     const { data, error } = await db.from("sdr_activities").select("hs_id")
-      .eq("type", type).gte("ts_ms", sinceMs).order("hs_id").range(from, from + 999);
+      .eq("type", type).gte("ts_ms", sinceMs).gt("hs_id", cursor)
+      .order("hs_id").limit(1000);
     if (error) throw new Error(`load ${type} ids: ${error.message}`);
-    ids.push(...(data ?? []).map((a: { hs_id: string }) => a.hs_id));
-    if (!data || data.length < 1000) break;
+    const page = (data ?? []).map((a: { hs_id: string }) => a.hs_id);
+    ids.push(...page);
+    if (page.length < 1000) break;
+    cursor = page[page.length - 1];
   }
   console.log(`[content] ${type}: ${ids.length} activities to read`);
 
