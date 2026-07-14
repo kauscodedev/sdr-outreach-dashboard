@@ -136,6 +136,15 @@ runs ungated with the spine/call-quality disabled; **production fails closed (50
 6. Deploy, then run `npm run sync:backfill` once. The dashboard reads the `sdr_snapshots` row live;
    call-quality data is read live from Supabase per request.
 
+### Ownership (since 2026-07-14)
+
+Everything lives under the **salesops** identity: GitHub repo `salesops-lab/sdr-outreach-dashboard`,
+Vercel project `sdr-outreach-dashboard` on the salesops account (Hobby tier — one project, three
+production domains; `spyne-sales-activity-tracker.vercel.app` is the team bookmark), and app admin +
+infra identity `salesops@spyne.ai`. `GH_DISPATCH_TOKEN` is a fine-grained PAT minted by the
+`salesops-lab` GitHub account — PATs are repo-owner-scoped, so a repo transfer kills them (re-mint
+from the new owner). Full footprint + migration gotchas are in `CLAUDE.md` ("Ownership footprint").
+
 ## Refresh
 
 Fully automated into Postgres — no more commit-the-snapshot.

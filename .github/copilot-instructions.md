@@ -1,6 +1,9 @@
-# Copilot Instructions: SDR Outreach Dashboard
+# Copilot Instructions: TrackerAI
 
-This document guides Copilot sessions working in this repository. For deeper architecture context, see [CLAUDE.md](../CLAUDE.md).
+This document guides Copilot sessions working in this repository (TrackerAI, formerly the SDR
+Outreach Coverage Dashboard). For deeper architecture context — including the salesops ownership
+footprint (repo `salesops-lab/sdr-outreach-dashboard`, salesops Vercel project, admin identity
+`salesops@spyne.ai`) — see [CLAUDE.md](../CLAUDE.md).
 
 ## Quick Reference
 
@@ -235,7 +238,7 @@ The hot-account agent runs every 2 hours (GitHub Actions), reads-only on HubSpot
   - `lib/auth/` — auth domain rule
   - `lib/supabase/` — Supabase client (admin = server-only)
 - `config/` — dispositions, HubSpot portal, canonical deal stages (`deal-stages.ts`); `reps`/`team-structure` are the roster seed/fallback (the DB is authoritative)
-- `tests/` — Vitest, 15 files (buckets, aggregate, aggregate-gd-grouping, associate, temperature, deal-stages, segmentation, deal-health, access, auth-domain, agent-detect, agent-prompt, agent-ranking, spine-rows, callquality)
+- `tests/` — Vitest, 21 files / 208 tests, pure logic only (full inventory in CLAUDE.md's Commands section)
 - `scripts/` — CLI scripts (sync, agent, verify-schema)
 - `supabase/` — SQL schema + RLS floor
 

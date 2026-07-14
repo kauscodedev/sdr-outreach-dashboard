@@ -28,7 +28,11 @@ owned book by demo-status with GD→rooftop→contact drill, Deal Health/Tempera
 **Attention** (`/attention`), **Admin** (`/admin`). Shared top-nav in `components/AppNav.tsx`.
 
 Read `README.md` for product definitions and setup. This file covers architecture and the
-non-obvious conventions that span multiple files.
+non-obvious conventions that span multiple files. Other docs: `docs/AI-CRM-BLUEPRINT.md` is the V3
+master spec (SHIPPED through P3; P4 write-back/Slack digests pending); `AGENTS.md` is a **symlink to
+this file** (never edit it separately); `MISTRAL.md` is a legacy V2-era deep-dive on the Enhanced
+Attention Board whose inline code samples include unshipped aspirational features — don't treat it
+as current state; `docs/superpowers/*` are historical phase-1/2/3 plans and specs.
 
 ## Commands
 
@@ -92,6 +96,11 @@ SSO (spyne.ai only), and login → owner → AE-pod/manager resolves a per-viewe
 scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions cron — NOT on Vercel)
   └─ lib/spine/runner.ts   orchestration (watermark-driven, advisory-locked, idempotent)
        ├─ lib/sync/pull.ts        pullChangedActivities / pullChangedCompanies / pullChangedDeals (hs_lastmodifieddate > watermark)
+       │    └─ lib/hubspot/client.ts  hubspotFetch — the ONE HubSpot HTTP layer (also under associate.ts +
+       │                              content-backfill): reads HUBSPOT_PAT; retries ×5 on 429 (Retry-After,
+       │                              ≤60s), 5xx, and THROWN network errors (a dropped socket would otherwise
+       │                              abort a long batch pull); 300ms request spacing. Distinct from
+       │                              config/hubspot.ts, which is deep-link URL builders only.
        ├─ lib/sync/associate.ts   resolve activity/deal → contact → company (v4 batch reads); resolveDealAssociations
        ├─ lib/sync/stage-events.ts pure hs_v2_date_entered/exited_<stageId> → DealStageEvent extraction (V3)
        ├─ lib/spine/store.ts      batched upserts into sdr_activities/companies/contacts/deals/
@@ -143,8 +152,10 @@ The heavy pull runs **outside Vercel** (a sync exceeds serverless limits). Caden
 by a **self-perpetuating heartbeat** (`spine-delta-heartbeat.yml`, loops `sync:delta` every ~15 min and
 self-redispatches — defeats GitHub's throttled `schedule:`; see the sync convention below), with
 `spine-delta.yml` (`*/15`) as a fallback; reconcile nightly (`spine-reconcile.yml`); agent every 2 h
-(`spine-agent.yml`). Shared contracts: `lib/sync/types.ts` (sync↔UI, incl. `Deal`, `AccountDeal`,
-`RepFunnel`, `CoverageStatus`, `DemoStatus`, `DealHealth`), `lib/spine/types.ts` (`sdr_*` rows +
+(`spine-agent.yml`); `spine-backfill.yml` + `spine-pull-owner.yml` are manual-dispatch-only wrappers
+for `sync:backfill` / `pull:owner` (that's all six workflows). Shared contracts: `lib/sync/types.ts`
+(sync↔UI, incl. `Deal`, `AccountDeal`, `RepFunnel`, `CoverageStatus`, `DemoStatus`, `DealHealth`),
+`lib/spine/types.ts` (`sdr_*` rows +
 `Viewer` incl. `kind`), `config/deal-stages.ts` (canonical stage model), `lib/callquality/types.ts`
 (read-only call-scoring), `lib/agent/types.ts` (agent I/O).
 
@@ -248,8 +259,9 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   `TeamStructure` from them, used when `sdr_roster` is empty/unreachable so nothing breaks
   mid-migration. Seed the DB from config with `npm run team:seed` (validates owner ids against
   `sdr_owners`, skips fabricated ones). Adding a rep still needs history pulled: the admin add-user
-  action auto-fires a **targeted single-owner backfill** (`runOwnerBackfill` → `spine-pull-owner.yml`,
-  needs `GH_DISPATCH_TOKEN`+`GH_REPO`); else `reconcile`/`backfill` catches them. **Never hand-enter
+  action (`components/admin/AddUserForm.tsx`) auto-fires a **targeted single-owner backfill**
+  (`runOwnerBackfill` → `spine-pull-owner.yml`, needs `GH_DISPATCH_TOKEN`+`GH_REPO`); else
+  `reconcile`/`backfill` catches them. **Never hand-enter
   owner ids** — resolve by email against `sdr_owners` (owner ids must be real HubSpot owners).
 - **RBAC is a 3-level focus model over the DB `TeamStructure`** (NOT HubSpot teams): SDR → AE pod →
   Manager, keyed by owner id; some SDRs are player-coach managers/TLs (TLs roll up to a parent).
@@ -280,7 +292,8 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   gaps). `spine-delta-heartbeat.yml` runs ONE long-lived job that loops `sync:delta` every ~15 min for
   ~5h20m, then **re-dispatches itself** before the 6h cap (needs the `GH_DISPATCH_TOKEN` **Actions**
   secret — a PAT with `actions:write`; `GITHUB_TOKEN` cannot trigger `workflow_dispatch`). `spine-delta.yml`
-  (`*/15`) stays as a fallback; the advisory lock makes overlap safe. Public repo = free unlimited Actions
+  (`*/15`) stays as a fallback, and the heartbeat has its own cold-start `schedule:` (`27 */3 * * *`) so a
+  dead chain revives within ~3h; the advisory lock makes overlap safe. Public repo = free unlimited Actions
   minutes, so the sleeping loop costs nothing. Gotcha: GitHub resolves `secrets.*` at **job start**, so a
   run already in flight when a secret is added sees it empty — test with a run dispatched *after*.
 - **Deals degrade gracefully before the V2 migration.** `persistDeals` swallows a missing-`sdr_deals`
@@ -337,7 +350,8 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
 - **Overview** `components/Dashboard.tsx` (client): rep table + a **Demo funnel strip** (`FunnelStrip`
   from `RepData.funnel`, links into `/accounts`) + an **SDR/AE toggle** (managers/admins only —
   `viewer.isAdmin || role manager|leadership` — filters reps via `snapshot.owner_kinds`). Clicking a rep
-  row opens `RepDrawer` (children-based to avoid an import cycle) containing `Scorecard`. **Guard** reads
+  row opens `RepDrawer` (children-based to avoid an import cycle) containing `Scorecard` (an inline
+  component in `Dashboard.tsx`, not a separate file). **Guard** reads
   of `RepData.funnel` / `owner_kinds` — absent on a pre-V2 snapshot; `m.demos` / `data.pipeline` —
   absent on a pre-V3 one. **V3 additions:** an **AE Pod / SDR Team dropdown** (options built
   server-side by `teamFilterOptions` in `lib/team/helpers.ts` and passed as the `teamFilters` prop —
