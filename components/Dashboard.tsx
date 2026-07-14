@@ -18,6 +18,7 @@ import { Viewer } from "../lib/spine/types";
 import { TeamFilterOption } from "../lib/team/helpers";
 import RepDrawer from "./RepDrawer";
 import GdExplorer from "./GdExplorer";
+import CallingCard, { CallingTab } from "./CallingCard";
 import AppNav from "./AppNav";
 import { STAGE_CHIP } from "./ui-tokens";
 import { Surface, SectionTitle, StatTile, Bar, Avatar, GradeBadge, SortHeader, Segmented, TEMP_META, cn } from "./ui";
@@ -82,7 +83,10 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
   const [sortKey, setSortKey] = useState<SortKey>("touches");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [drawerRep, setDrawerRep] = useState<string | null>(null);
-  const closeDrawer = useCallback(() => setDrawerRep(null), []);
+  // Set when the drawer is opened from a calling number (Touches/Contacts/Rooftops cell) —
+  // lands the CallingCard on the matching view.
+  const [callingFocus, setCallingFocus] = useState<CallingTab | null>(null);
+  const closeDrawer = useCallback(() => { setDrawerRep(null); setCallingFocus(null); }, []);
 
   // Focus model: a viewer whose default scope is a strict, non-empty subset of the
   // tracked reps gets a "My scope / All reps" toggle (org view stays available to all).
@@ -281,7 +285,10 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => <RepRow key={r.ownerId} row={r} onOpen={() => setDrawerRep(r.ownerId)} />)}
+              {rows.map((r) => (
+                <RepRow key={r.ownerId} row={r} onOpen={() => setDrawerRep(r.ownerId)}
+                  onOpenCalling={(tab) => { setCallingFocus(tab); setDrawerRep(r.ownerId); }} />
+              ))}
             </tbody>
           </table>
         </div>
@@ -291,6 +298,7 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
         Coverage = cumulative owned accounts (company owner = rep) the rep has ever tapped, rolled up to Group-Dealership / Single units.
         Temperature reflects buyer intent from call outcomes + engagement — open a rep to see the per-account reason.
         Quality = conversations · depth · persistence · channel · deliverability. Per-account detail (with HubSpot links) for {NARROW_PERIODS.map((p) => PERIOD_LABELS[p]).join(", ")}.
+        Click a rep&rsquo;s Touches / Contacts / Rooftops number for the calling drill-down — who was called, where, and what happened — in any period.
       </p>
 
       {drawerRep && (() => {
@@ -303,8 +311,11 @@ export default function Dashboard({ snapshot, viewer, teamFilters }: {
             onClose={closeDrawer}
           >
             {/* In range mode m comes from /api/metrics/range (no company_breakdown), so pass a
-                non-narrow period key to keep the per-account card in its "narrow periods only" state. */}
-            <Scorecard key={drawerRep} data={r.data} m={r.m} period={range ? "last_week" : period} name={r.name} ownerId={drawerRep} />
+                non-narrow period key to keep the per-account card in its "narrow periods only" state.
+                The calling drill-down gets the REAL window via callingPeriod/range (spine-backed —
+                it works for every period and custom ranges alike). */}
+            <Scorecard key={drawerRep} data={r.data} m={r.m} period={range ? "last_week" : period} name={r.name} ownerId={drawerRep}
+              callingPeriod={period} range={range} callingFocus={callingFocus} />
           </RepDrawer>
         ) : null;
       })()}
@@ -373,9 +384,12 @@ function FunnelStrip({ pending, scheduled, done, atRisk, lens, periodDemos }: {
   );
 }
 
-function RepRow({ row, onOpen }: { row: Row; onOpen: () => void }) {
+function RepRow({ row, onOpen, onOpenCalling }: { row: Row; onOpen: () => void; onOpenCalling: (tab: CallingTab) => void }) {
   const m = row.m;
   const dim = row.touches === 0;
+  // Calling numbers are their own click targets → drawer opens on the matching drill-down view.
+  const calling = (tab: CallingTab) => (e: React.MouseEvent) => { e.stopPropagation(); onOpenCalling(tab); };
+  const drill = "cursor-pointer transition hover:bg-primary-weak";
   return (
     <tr onClick={onOpen} className={cn("cursor-pointer border-b border-line/70 transition-colors last:border-0 hover:bg-primary-weak/50", dim && "opacity-45")}>
       <td className="px-3 py-2.5">
@@ -385,17 +399,18 @@ function RepRow({ row, onOpen }: { row: Row; onOpen: () => void }) {
         </div>
       </td>
       <td className="px-3 py-2.5"><GradeBadge grade={m.quality.grade} score={m.quality.score} /></td>
-      <td className="px-3 py-2.5 text-right">
+      <td className={cn("px-3 py-2.5 text-right", drill)} onClick={calling("log")} title="Open the call log">
         <div className="font-mono font-bold tabular-nums text-ink">{fmt(row.touches)}</div>
         <div className="mt-0.5 text-[10px] tabular-nums text-ink-subtle">{fmt(m.calls.total)}d · {fmt(m.calls.connected)}c · {fmt(m.emails.sent)}e</div>
       </td>
-      <td className="px-3 py-2.5 text-right">
+      <td className={cn("px-3 py-2.5 text-right", drill)} onClick={calling("contacts")} title="Who was called — unique contacts with outcomes">
         <div className="font-mono tabular-nums text-ink">{fmt(m.contacts.total)}</div>
         <div className="mt-0.5 inline-flex items-center gap-1.5 text-[10px] tabular-nums text-ink-subtle">
           <Phone className="h-2.5 w-2.5" />{fmt(m.contacts.via_call)}<Mail className="ml-0.5 h-2.5 w-2.5" />{fmt(m.contacts.via_email)}
         </div>
       </td>
-      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink">{fmt(m.companies.total)}</td>
+      <td className={cn("px-3 py-2.5 text-right font-mono tabular-nums text-ink", drill)} onClick={calling("rooftops")}
+        title="Which rooftops were called — who within them, with outcomes">{fmt(m.companies.total)}</td>
       <td className="px-3 py-2.5">
         {row.data.book.units_total > 0
           ? <div className="flex items-center gap-2"><Bar value={row.data.book.pct} tone="primary" /><span className="font-mono text-xs tabular-nums text-ink-muted">{pct0(row.data.book.pct)}</span></div>
@@ -441,7 +456,10 @@ function FunnelCell({ n, bucket, ownerId, kind, cls, title }: {
 
 /* ================================================================== Drawer body (Scorecard) */
 
-function Scorecard({ data, m, period, name, ownerId }: { data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; ownerId: string }) {
+function Scorecard({ data, m, period, name, ownerId, callingPeriod, range, callingFocus }: {
+  data: RepData; m: PeriodMetrics; period: PeriodKey; name: string; ownerId: string;
+  callingPeriod: PeriodKey; range: { from: string; to: string } | null; callingFocus: CallingTab | null;
+}) {
   const [acctFilter, setAcctFilter] = useState<AcctFilter>("all");
   const acctRef = useRef<HTMLDivElement>(null);
   const hasBreakdown = NARROW_PERIODS.includes(period);
@@ -455,6 +473,7 @@ function Scorecard({ data, m, period, name, ownerId }: { data: RepData; m: Perio
     <div className="space-y-5">
       <InsightChips insights={m.insights} hasBreakdown={hasBreakdown} onMeetings={() => focusAccounts("meetings")} onHot={() => focusAccounts("hot")} />
       <KpiStrip m={m} />
+      <CallingCard ownerId={ownerId} period={callingPeriod} range={range} initialTab={callingFocus} />
       <PipelineCard p={data.pipeline} />
       <MonthlyCard monthly={data.monthly} />
       <GdExplorer ownerId={ownerId} book={data.book} />

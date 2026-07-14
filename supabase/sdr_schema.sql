@@ -222,7 +222,11 @@ create table if not exists sdr_embeddings (
   updated_at timestamptz not null default now()
 );
 create index if not exists idx_sdr_emb_account on sdr_embeddings(account_id);
-create index if not exists idx_sdr_emb_vec on sdr_embeddings using hnsw (embedding vector_cosine_ops);
+-- IVFFlat, not HNSW: builds in seconds through the Supabase SQL editor (an HNSW build over the
+-- full corpus exceeds the editor's gateway timeout and needs a direct DB connection), and recall
+-- at this corpus size (~66k rows) is fine. Without ANY vector index the corpus-wide search
+-- seq-scans past statement_timeout and returns 0 hits (observed 2026-07-14).
+create index if not exists idx_sdr_emb_vec on sdr_embeddings using ivfflat (embedding vector_cosine_ops) with (lists = 100);
 
 -- Cosine similarity search (PostgREST can't express vector operators — RPC required).
 -- p_account_id null = whole corpus; else scoped to one account's history.

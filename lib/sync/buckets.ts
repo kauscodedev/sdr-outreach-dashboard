@@ -159,3 +159,30 @@ export function periodsForActivity(utcMs: number, ctx: EtContext): PeriodKey[] {
 export function dayIndexToYmd(dayIndex: number): [number, number, number] {
   return ymdOf(dayIndex);
 }
+
+/** UTC [fromMs, toMs) window for one of the six periods — the inverse of periodsForActivity
+ *  (a past activity falls in the window iff the period matches). Built from the same civil
+ *  ordinals, so DST transitions inside a window are handled by etMidnightUtcMs. */
+export function periodBounds(period: PeriodKey, ctx: EtContext): { fromMs: number; toMs: number } {
+  const mid = (di: number) => {
+    const [y, m, d] = ymdOf(di);
+    return etMidnightUtcMs(y, m, d);
+  };
+  const t = ctx.todayIndex;
+  switch (period) {
+    case "today": return { fromMs: mid(t), toMs: mid(t + 1) };
+    case "yesterday": return { fromMs: mid(t - 1), toMs: mid(t) };
+    case "last_3_days": return { fromMs: mid(t - 2), toMs: mid(t + 1) };
+    case "this_week": return { fromMs: mid(ctx.weekStartIndex), toMs: mid(t + 1) };
+    case "last_week": return { fromMs: mid(ctx.weekStartIndex - 7), toMs: mid(ctx.weekStartIndex) };
+    case "this_month": return { fromMs: mid(ctx.monthStartIndex), toMs: mid(t + 1) };
+  }
+}
+
+/** ET midnight for a "YYYY-MM-DD", offset by `plusDays` civil days (Date.UTC handles overflow).
+ *  Shared by the /api/metrics/range and /api/rep/[ownerId]/calling routes. */
+export function etDayStartMs(ymd: string, plusDays = 0): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + plusDays));
+  return etMidnightUtcMs(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+}

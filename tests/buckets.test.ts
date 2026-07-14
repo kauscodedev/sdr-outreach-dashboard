@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { makeEtContext, periodsForActivity, etDateStr, etMidnightUtcMs } from "../lib/sync/buckets";
+import { makeEtContext, periodsForActivity, etDateStr, etMidnightUtcMs, periodBounds, etDayStartMs } from "../lib/sync/buckets";
+import { PERIOD_KEYS } from "../lib/sync/types";
 
 const DAY_MS = 86_400_000;
 // Noon ET on a fixed day, expressed in UTC. 2026-06-29 is a Monday; June is EDT (UTC-4),
@@ -91,5 +92,67 @@ describe("periodsForActivity", () => {
   it("window start covers the earliest needed boundary", () => {
     expect(ctx.windowStartMs).toBeLessThanOrEqual(noonEt(ctx.weekStartIndex - 7));
     expect(ctx.windowStartMs).toBeLessThanOrEqual(NOW - 2 * DAY_MS);
+  });
+});
+
+describe("periodBounds", () => {
+  // NOW is Monday 2026-06-29 noon ET (EDT) — week start == today, month start June 1.
+  const ctx = makeEtContext(NOW);
+
+  it("today spans ET midnight to next ET midnight", () => {
+    const b = periodBounds("today", ctx);
+    expect(b.fromMs).toBe(etMidnightUtcMs(2026, 6, 29));
+    expect(b.toMs).toBe(etMidnightUtcMs(2026, 6, 30));
+  });
+
+  it("yesterday is the single prior ET day", () => {
+    const b = periodBounds("yesterday", ctx);
+    expect(b.fromMs).toBe(etMidnightUtcMs(2026, 6, 28));
+    expect(b.toMs).toBe(etMidnightUtcMs(2026, 6, 29));
+  });
+
+  it("last_3_days = today + 2 prior days", () => {
+    const b = periodBounds("last_3_days", ctx);
+    expect(b.fromMs).toBe(etMidnightUtcMs(2026, 6, 27));
+    expect(b.toMs).toBe(etMidnightUtcMs(2026, 6, 30));
+  });
+
+  it("this_week starts Monday; last_week is the prior Mon–Sun", () => {
+    const tw = periodBounds("this_week", ctx);
+    expect(tw.fromMs).toBe(etMidnightUtcMs(2026, 6, 29)); // NOW is a Monday
+    expect(tw.toMs).toBe(etMidnightUtcMs(2026, 6, 30));
+    const lw = periodBounds("last_week", ctx);
+    expect(lw.fromMs).toBe(etMidnightUtcMs(2026, 6, 22));
+    expect(lw.toMs).toBe(etMidnightUtcMs(2026, 6, 29));
+  });
+
+  it("this_month starts on the 1st", () => {
+    const b = periodBounds("this_month", ctx);
+    expect(b.fromMs).toBe(etMidnightUtcMs(2026, 6, 1));
+    expect(b.toMs).toBe(etMidnightUtcMs(2026, 6, 30));
+  });
+
+  it("agrees with periodsForActivity for every period (incl. across the DST fall-back week)", () => {
+    // 2026-11-04 is the Wednesday after DST ends (Nov 1) — last_week straddles the transition.
+    const dstCtx = makeEtContext(Date.UTC(2026, 10, 4, 17, 0, 0)); // noon EST
+    for (const c of [ctx, dstCtx]) {
+      for (const p of PERIOD_KEYS) {
+        const { fromMs, toMs } = periodBounds(p, c);
+        // Just inside both edges → the period matches; just outside → it doesn't.
+        expect(periodsForActivity(fromMs, c)).toContain(p);
+        expect(periodsForActivity(toMs - 1, c)).toContain(p);
+        expect(periodsForActivity(fromMs - 1, c)).not.toContain(p);
+        // Upper edge: bounds cut at end-of-today, but periodsForActivity would also match
+        // FUTURE days of the current month — unreachable for real activities, so skip it there.
+        if (p !== "this_month") expect(periodsForActivity(toMs, c)).not.toContain(p);
+      }
+    }
+  });
+});
+
+describe("etDayStartMs", () => {
+  it("returns ET midnight for a YYYY-MM-DD and offsets by civil days across month ends", () => {
+    expect(etDayStartMs("2026-06-29")).toBe(etMidnightUtcMs(2026, 6, 29));
+    expect(etDayStartMs("2026-06-30", 1)).toBe(etMidnightUtcMs(2026, 7, 1)); // overflows into July
   });
 });

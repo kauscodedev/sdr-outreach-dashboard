@@ -235,6 +235,21 @@ export async function loadCompanyRefs(): Promise<Map<string, { name: string | nu
   return new Map(rows.map((r) => [String(r.hs_id), { name: r.name, owner_id: r.owner_id }]));
 }
 
+/** Company names for a specific id set (chunked .in reads) — the calling drill-down's rooftop
+ *  labels without loading the whole sdr_companies table per request. */
+export async function loadCompanyNamesFor(ids: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < ids.length; i += PAGE) {
+    const { data, error } = await sb().from("sdr_companies").select("hs_id,name")
+      .in("hs_id", ids.slice(i, i + PAGE));
+    if (error) throw new Error(`[spine] fetch sdr_companies subset: ${error.message}`);
+    for (const r of (data ?? []) as { hs_id: string; name: string | null }[]) {
+      if (r.name) out[String(r.hs_id)] = r.name;
+    }
+  }
+  return out;
+}
+
 /** Contact meta for a specific id set (chunked .in reads) — range DM-reach without a full scan. */
 export async function loadContactMetaFor(ids: string[]): Promise<Record<string, ContactMeta>> {
   const out: Record<string, ContactMeta> = {};

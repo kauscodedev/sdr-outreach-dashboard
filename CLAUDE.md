@@ -64,7 +64,8 @@ or `pull_request`, so `lint`/`test`/`build` are **not** enforced in CI. Run `npm
 
 Run a **single test**: `npx vitest run tests/temperature.test.ts` (add `-t "name"` to filter by
 test name; drop `run` for watch mode). Tests (`tests/`) cover only pure logic: US/Eastern bucketing
-(`buckets.test.ts`, incl. DST cases), aggregation incl. GD book units + owner≠doer + monthly + deal
+(`buckets.test.ts`, incl. DST cases + `periodBounds`, the period→[from,to) inverse of
+`periodsForActivity`), aggregation incl. GD book units + owner≠doer + monthly + deal
 integration (`aggregate.test.ts`, plus GD-grouping edge cases in `aggregate-gd-grouping.test.ts`),
 activity/deal→company association (`associate.test.ts`), the temperature classifier
 (`temperature.test.ts`), the canonical deal-stage engine incl. the pipeline-collision guard + the
@@ -75,8 +76,9 @@ mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the 
 (`agent-detect.test.ts`), the agent prompt builder (`agent-prompt.test.ts`), the attention ranking
 (`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), the pod/team filter
 options (`team-filters.test.ts`), the account-timeline builder (`account-timeline.test.ts`),
-Forecast v1 (`forecast.test.ts`), the integrity checks (`integrity.test.ts`), and the embedding
-chunk composer (`embed-chunks.test.ts`) — 21 files / 208 tests in all. Never
+Forecast v1 (`forecast.test.ts`), the integrity checks (`integrity.test.ts`), the embedding
+chunk composer (`embed-chunks.test.ts`), and the calling drill-down builder (`calling.test.ts`)
+— 22 files / 224 tests in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -122,6 +124,13 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   app/admin      control center: add/update users (email→owner), roster + soft-delete, manage pods/managers, roles, sync health   (admin only)
   app/attention  hot-account task list (AttentionBoard / AttentionBoardEnhanced) ← sdr_agent_watches
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
+  app/api/rep/[ownerId]/calling   calling drill-down: ?period=<PeriodKey> or ?from&to → spine read
+                          (periodBounds in buckets.ts inverts the period to a [from,to) window) →
+                          pure lib/sync/calling.ts buildCallingDetail (unique contacts called →
+                          connected → who → outcome, rooftops + who within them, capped call log) →
+                          components/CallingCard.tsx in the rep drawer; the Overview row's
+                          Touches/Contacts/Rooftops numbers open it on the matching view. Works for
+                          ALL six periods + custom ranges — deliberately NOT in the snapshot (size)
   app/api/metrics/range   arbitrary from–to ET window → aggregateRange over the spine (V3; same
                           pure engine as the fixed periods; 190-day cap; session-gated like all /api)
   app/api/account/[companyId]/timeline   per-account unified history (V3 P2d): calls/emails (jsonb
@@ -358,6 +367,10 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   Overview + Accounts both), a **from–to date-range picker** (swaps the table/tiles to
   `/api/metrics/range` results; period chips deselect), a sortable **Demos** column + per-rep
   **Funnel** cells deep-linking to `/accounts?lens&bucket&rep`, and a **PipelineCard** in the drawer.
+  A rep row's **Touches / Contacts / Rooftops** cells are their own click targets (stopPropagation) →
+  the drawer's **CallingCard** (`components/CallingCard.tsx`) on the log / contacts / rooftops view —
+  the spine-backed calling drill-down (`/api/rep/[ownerId]/calling`) for any period or custom range;
+  funnel tiles + outcome chips filter client-side, per-tab CSV, HubSpot links incl. `callUrl` per log row.
 - **Deals & Accounts** `components/Accounts.tsx` (client, `/accounts`) — the deal-funnel page, two
   views (**Funnel | Book** toggle; URL `bucket` deep-links land on Book, `view=` overrides):
   **Funnel** (`components/DealFunnel.tsx` ← `/api/deals`) renders three lanes (Lead→Demo SDR motion,
