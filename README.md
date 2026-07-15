@@ -4,7 +4,7 @@
 Dashboard), gated behind **Google SSO (@spyne.ai only)**.
 Tracks **outbound** outreach by a DB-backed, admin-editable roster of SDRs & AEs from HubSpot —
 unique contacts/companies tapped, engagement depth, call-outcome + email breakdowns — across
-US/Eastern time windows (Today / Yesterday / Last 3 days / This week / Last week / This month), plus:
+US/Eastern time windows (Today / Yesterday / This week / Last week / This month / Last month), plus:
 
 - **GD Book Explorer** (per rep): assigned Group-Dealership / Single units → rooftops engaged
   within each GD → who was engaged (top contacts) → activity depth + last touch. An all-history

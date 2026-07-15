@@ -28,8 +28,9 @@ import {
   resetWatch,
   initActionsListener,
   closeActionsListener,
+  refreshFromServer,
   WatchAction,
-} from "../lib/agent/actions";
+} from "../lib/agent/actions-client";
 import { MarketSegment } from "../lib/sync/types";
 
 interface NextStepDetails {
@@ -142,13 +143,15 @@ export default function AttentionBoardEnhanced({ watches, names = {}, briefs = {
   const [viewMode, setViewMode] = useState<"list" | "kanban">("list");
   const [timelineFor, setTimelineFor] = useState<{ id: string; name: string } | null>(null);
 
-  // Load actions from localStorage on mount
+  // Load actions: local cache immediately, then reconcile with the shared server state
+  // (the one-time legacy-localStorage import happens inside refreshFromServer).
   useEffect(() => {
     setActions(loadActions());
+    void refreshFromServer().then((merged) => setActions(merged));
     initActionsListener(() => {
       setActions(loadActions());
     });
-    
+
     return () => {
       closeActionsListener();
     };
@@ -421,7 +424,7 @@ export default function AttentionBoardEnhanced({ watches, names = {}, briefs = {
                                   <span>{details.action}</span>
                                 </div>
                                 {details.helperText && (
-                                  <span className="inline-flex items-center gap-1 rounded bg-primary text-[10px] text-white px-1.5 py-0.5 font-bold uppercase cursor-pointer hover:bg-primary-hover shadow-sm mt-1">
+                                  <span className="inline-flex items-center gap-1 rounded bg-primary text-[10px] text-white px-1.5 py-0.5 font-bold uppercase cursor-pointer hover:bg-primary-strong shadow-sm mt-1">
                                     {details.channel === "call" ? <Phone className="h-2.5 w-2.5" /> : <Mail className="h-2.5 w-2.5" />}
                                     {details.channel === "call" ? "Call Script" : "Email Template"}
                                   </span>
@@ -610,7 +613,7 @@ export default function AttentionBoardEnhanced({ watches, names = {}, briefs = {
                             <span>{details ? details.action : w.nextStep}</span>
                           </div>
                           {details && details.helperText && (
-                            <span className="inline-flex self-start items-center gap-1 rounded bg-primary text-[10px] text-white px-1.5 py-0.5 font-bold uppercase cursor-pointer hover:bg-primary-hover shadow-sm">
+                            <span className="inline-flex self-start items-center gap-1 rounded bg-primary text-[10px] text-white px-1.5 py-0.5 font-bold uppercase cursor-pointer hover:bg-primary-strong shadow-sm">
                               {details.channel === "call" ? <Phone className="h-2.5 w-2.5" /> : <Mail className="h-2.5 w-2.5" />}
                               {details.channel === "call" ? "Call Script" : "Email Template"}
                             </span>
@@ -754,7 +757,7 @@ export default function AttentionBoardEnhanced({ watches, names = {}, briefs = {
                                           e.stopPropagation();
                                           handleCopy(w.accountId, details.helperText);
                                         }}
-                                        className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary-hover px-2 py-1 rounded hover:bg-primary-weak/40 transition"
+                                        className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary-strong px-2 py-1 rounded hover:bg-primary-weak/40 transition"
                                       >
                                         {copiedId === w.accountId ? (
                                           <>

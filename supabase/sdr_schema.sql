@@ -215,12 +215,19 @@ create extension if not exists vector;
 create table if not exists sdr_embeddings (
   hs_id      text primary key,   -- activity id (matches sdr_activities / sdr_activity_content)
   account_id text,               -- the activity's primary company (per-account recall filter)
+  owner_id   text,               -- activity DOER (rep) — Intelligence 2.0 search scoping
   ts_ms      bigint,             -- activity timestamp
   kind       text,               -- 'call' | 'email'
   chunk      text not null,      -- the embedded text
   embedding  vector(1536) not null,
   updated_at timestamptz not null default now()
 );
+-- Intelligence 2.0: rep attribution on the vectors. Added via ALTER for existing installs;
+-- backfill once from sdr_activities (indexNewContent writes it for new rows):
+--   update sdr_embeddings e set owner_id = a.owner_id
+--     from sdr_activities a where a.hs_id = e.hs_id and e.owner_id is null;
+alter table sdr_embeddings add column if not exists owner_id text;
+create index if not exists idx_sdr_emb_owner on sdr_embeddings(owner_id);
 create index if not exists idx_sdr_emb_account on sdr_embeddings(account_id);
 -- IVFFlat, not HNSW: builds in seconds through the Supabase SQL editor (an HNSW build over the
 -- full corpus exceeds the editor's gateway timeout and needs a direct DB connection), and recall
@@ -267,6 +274,190 @@ begin
 end;
 $$;
 grant execute on function sdr_search_content(vector, text, int) to service_role;
+
+-- Intelligence 2.0: filtered semantic search (Ask-TrackerAI). Adds rep/kind/date filters on top
+-- of the v1 contract; v1 stays untouched (briefs depend on it). Corpus strategy is
+-- SELECTIVITY-AWARE (verified live 2026-07-15): a KNN over-fetch + post-filter STARVES when the
+-- query's neighborhood doesn't match the filter (observed: a pricing query's 180-NN were 11/12
+-- emails → kind='call'+recency returned 0 despite 20k matching rows). So: filtered count ≤4k →
+-- EXACT filtered sort (~0.3s); dense filter → probes=5 KNN with 720-row over-fetch (~3s);
+-- no filters → plain KNN. VOLATILE because the dense branch sets ivfflat.probes (txn-local).
+create or replace function sdr_search_content_v2(
+  p_query vector(1536),
+  p_account_id text  default null,
+  p_owner_ids  text[] default null,   -- activity DOERS (viewer scope / rep filter)
+  p_kind       text  default null,    -- 'call' | 'email'
+  p_after_ms   bigint default null,
+  p_before_ms  bigint default null,
+  p_limit      int   default 12
+) returns table (hs_id text, account_id text, owner_id text, ts_ms bigint,
+                 kind text, chunk text, similarity float)
+language plpgsql volatile as $$
+declare
+  n bigint;
+begin
+  if p_account_id is not null then
+    -- Account-scoped: btree(account_id) narrows to tens of rows — always exact.
+    return query
+      select e.hs_id, e.account_id, e.owner_id, e.ts_ms, e.kind, e.chunk,
+             1 - (e.embedding <=> p_query)
+      from sdr_embeddings e
+      where e.account_id = p_account_id
+        and (p_kind is null or e.kind = p_kind)
+        and (p_after_ms is null or e.ts_ms >= p_after_ms)
+        and (p_before_ms is null or e.ts_ms < p_before_ms)
+        and (p_owner_ids is null or e.owner_id = any(p_owner_ids))
+      order by e.embedding <=> p_query
+      limit p_limit;
+    return;
+  end if;
+
+  if p_kind is null and p_after_ms is null and p_before_ms is null and p_owner_ids is null then
+    return query
+      select e.hs_id, e.account_id, e.owner_id, e.ts_ms, e.kind, e.chunk,
+             1 - (e.embedding <=> p_query)
+      from sdr_embeddings e
+      order by e.embedding <=> p_query
+      limit p_limit;
+    return;
+  end if;
+
+  -- Filtered corpus: choose strategy by selectivity (count is vector-free, cheap).
+  select count(*) into n from sdr_embeddings e
+  where (p_kind is null or e.kind = p_kind)
+    and (p_after_ms is null or e.ts_ms >= p_after_ms)
+    and (p_before_ms is null or e.ts_ms < p_before_ms)
+    and (p_owner_ids is null or e.owner_id = any(p_owner_ids));
+
+  if n = 0 then return; end if;
+
+  if n <= 4000 then
+    -- Selective: exact sort over the filtered rows — immune to KNN post-filter starvation.
+    return query
+      select e.hs_id, e.account_id, e.owner_id, e.ts_ms, e.kind, e.chunk,
+             1 - (e.embedding <=> p_query)
+      from sdr_embeddings e
+      where (p_kind is null or e.kind = p_kind)
+        and (p_after_ms is null or e.ts_ms >= p_after_ms)
+        and (p_before_ms is null or e.ts_ms < p_before_ms)
+        and (p_owner_ids is null or e.owner_id = any(p_owner_ids))
+      order by e.embedding <=> p_query
+      limit p_limit;
+    return;
+  end if;
+
+  -- Dense: widen the KNN pool (5 probes ≈ 3.3k candidates) and over-fetch before filtering.
+  perform set_config('ivfflat.probes', '5', true);
+  return query
+    select k.f_hs_id, k.f_account_id, k.f_owner_id, k.f_ts_ms, k.f_kind, k.f_chunk, k.f_sim
+    from (
+      select e.hs_id as f_hs_id, e.account_id as f_account_id, e.owner_id as f_owner_id,
+             e.ts_ms as f_ts_ms, e.kind as f_kind, e.chunk as f_chunk,
+             1 - (e.embedding <=> p_query) as f_sim
+      from sdr_embeddings e
+      order by e.embedding <=> p_query
+      limit greatest(p_limit * 60, 720)
+    ) k
+    where (p_kind is null or k.f_kind = p_kind)
+      and (p_after_ms is null or k.f_ts_ms >= p_after_ms)
+      and (p_before_ms is null or k.f_ts_ms < p_before_ms)
+      and (p_owner_ids is null or k.f_owner_id = any(p_owner_ids))
+    limit p_limit;
+end $$;
+grant execute on function sdr_search_content_v2(vector, text, text[], text, bigint, bigint, int) to service_role;
+
+-- Intelligence 2.0: typed signals mined nightly from NEW activity content by
+-- `npm run intel:signals` (spine-reconcile.yml, after embed:content). Feeds the manager
+-- Themes view, the AE Deal Radar, and per-account garnish on the SDR Focus list.
+create table if not exists sdr_intel_signals (
+  id          bigint generated always as identity primary key,
+  hs_id       text not null,        -- activity (sdr_activities / sdr_activity_content)
+  account_id  text,                 -- primary company (same attribution as sdr_embeddings)
+  owner_id    text,                 -- activity doer (rep)
+  ts_ms       bigint,               -- activity timestamp
+  kind        text,                 -- 'call' | 'email'
+  label       text not null check (label in
+                ('objection','competitor_mention','pricing_question','buying_signal',
+                 'risk_phrase','commitment','timing')),
+  category    text,                 -- objection: price|budget|timing|authority|competitor|
+                                    --   product_fit|trust|no_need|other
+                                    -- competitor_mention: normalized competitor name
+                                    -- timing: now|this_quarter|next_quarter|someday
+  quote       text not null,        -- near-verbatim evidence from the content
+  confidence  real,
+  model       text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists idx_intel_sig_account  on sdr_intel_signals(account_id, ts_ms desc);
+create index if not exists idx_intel_sig_label_ts on sdr_intel_signals(label, ts_ms desc);
+create index if not exists idx_intel_sig_owner_ts on sdr_intel_signals(owner_id, ts_ms desc);
+create index if not exists idx_intel_sig_hs       on sdr_intel_signals(hs_id);
+
+-- Scan ledger: idempotency INDEPENDENT of whether signals were found (an anti-join on
+-- sdr_intel_signals alone would re-scan every signal-less row forever). A row is re-scanned
+-- when its recomposed chunk grows >1.4x content_len (late-arriving transcript).
+create table if not exists sdr_intel_scans (
+  hs_id        text primary key,
+  content_len  int not null,        -- composeChunk length at scan time
+  signal_count int not null default 0,
+  model        text,
+  scanned_at   timestamptz not null default now()
+);
+
+-- Themes rollups (PostgREST can't express GROUP BY — RPCs required). Volume is small
+-- (~1k signals/day), so these are request-time aggregates; no materialized rollup.
+create or replace function sdr_intel_themes(
+  p_after_ms bigint, p_before_ms bigint, p_owner_ids text[] default null
+) returns table (label text, category text, mentions bigint, accounts bigint, reps bigint)
+language sql stable as $$
+  select s.label, coalesce(s.category,'(uncategorized)'),
+         count(*), count(distinct s.account_id), count(distinct s.owner_id)
+  from sdr_intel_signals s
+  where s.ts_ms >= p_after_ms and s.ts_ms < p_before_ms
+    and (p_owner_ids is null or s.owner_id = any(p_owner_ids))
+  group by 1, 2 order by 3 desc
+$$;
+create or replace function sdr_intel_theme_trend(
+  p_after_ms bigint, p_before_ms bigint, p_label text, p_owner_ids text[] default null
+) returns table (week_start date, category text, mentions bigint)
+language sql stable as $$
+  select (date_trunc('week', to_timestamp(s.ts_ms/1000.0) at time zone 'America/New_York'))::date,
+         coalesce(s.category,'(uncategorized)'), count(*)
+  from sdr_intel_signals s
+  where s.label = p_label and s.ts_ms >= p_after_ms and s.ts_ms < p_before_ms
+    and (p_owner_ids is null or s.owner_id = any(p_owner_ids))
+  group by 1, 2 order by 1
+$$;
+grant execute on function sdr_intel_themes(bigint, bigint, text[]) to service_role;
+grant execute on function sdr_intel_theme_trend(bigint, bigint, text, text[]) to service_role;
+
+-- Ask-TrackerAI audit log + rate limiter (40 asks/user/rolling-24h). RLS is ENABLED with NO
+-- select policy on purpose — questions are per-user private; only the service role reads it.
+-- Keep this table OUT of the org-wide RLS SELECT loop below.
+create table if not exists sdr_intel_asks (
+  id bigint generated always as identity primary key,
+  email text not null,
+  question text not null,
+  answer jsonb,                -- the AskResponse (audit + future "recent asks" UI)
+  steps int, searches int, ms int, model text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_intel_asks_email_at on sdr_intel_asks(email, created_at desc);
+alter table sdr_intel_asks enable row level security;
+
+-- Shared action tracking for the Intelligence board (replaces browser localStorage so managers
+-- see follow-through). One row per account — mirrors the old client-side semantics.
+create table if not exists sdr_agent_actions (
+  account_id       text primary key,
+  status           text not null default 'not_started'
+                     check (status in ('not_started','in_progress','completed','snoozed')),
+  last_action_type text check (last_action_type in ('call','email','meeting','note','snoozed')),
+  last_action_at   timestamptz,
+  snoozed_until    timestamptz,
+  notes            jsonb not null default '[]',   -- [{at, by, note}]
+  updated_by       text,                          -- actor email
+  updated_at       timestamptz not null default now()
+);
 
 -- V3 P3: grounded account briefs (blueprint §7.2) — summary, stakeholders, buying signals,
 -- objections, next step (each signal/objection with dated evidence), synthesized from the
@@ -378,7 +569,9 @@ begin
                            'sdr_activity_content','sdr_agent_watches','sdr_agent_notes',
                            'sdr_pods','sdr_managers','sdr_roster',
                            'sdr_deal_stage_events','sdr_contact_companies','sdr_agent_briefs',
-                           'sdr_embeddings']
+                           'sdr_embeddings',
+                           -- Intelligence 2.0 (sdr_intel_asks intentionally EXCLUDED — private)
+                           'sdr_intel_signals','sdr_intel_scans','sdr_agent_actions']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists %I on %I', t || '_spyne_select', t);

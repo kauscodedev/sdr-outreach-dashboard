@@ -26,9 +26,15 @@ export async function runToolLoop(opts: {
   tools: LoopTool[]; // read tools — the submit tool is declared separately
   submit: { name: string; description: string; parameters: Record<string, unknown> };
   maxSteps?: number;
+  /** Wall-clock budget (ms). Once exceeded, the model is told to submit immediately — used by
+   *  request-time callers (Ask) that must finish inside a serverless maxDuration. */
+  deadlineMs?: number;
 }): Promise<Record<string, unknown> | null> {
   const { system, user, tools, submit } = opts;
   const maxSteps = opts.maxSteps ?? 8;
+  const startedAt = Date.now();
+  const pastDeadline = () => opts.deadlineMs != null && Date.now() - startedAt > opts.deadlineMs;
+  let deadlineNudged = false;
 
   const toolDefs: ChatToolDef[] = [
     ...tools.map((t) => ({
@@ -68,6 +74,11 @@ export async function runToolLoop(opts: {
         out = `Tool error: ${(e as Error).message}`;
       }
       messages.push({ role: "tool", tool_call_id: tc.id, content: out.slice(0, TOOL_OUTPUT_CAP) });
+    }
+
+    if (pastDeadline() && !deadlineNudged) {
+      deadlineNudged = true;
+      messages.push({ role: "user", content: `Time budget exhausted — call ${submit.name} NOW with your best result from what you already have. Do not call any other tool.` });
     }
   }
   return null; // budget exhausted without a submit — caller falls back

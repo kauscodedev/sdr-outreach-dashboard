@@ -47,7 +47,7 @@ footprint (repo `salesops-lab/sdr-outreach-dashboard`, salesops Vercel project, 
   - Single file: `npm test -- --run tests/temperature.test.ts`
   - By name: `npm test -- --run -t "temperature"`
   - Watch mode: `npx vitest tests/temperature.test.ts` (drop the `--run`)
-- **Test coverage:** `tests/` covers pure logic only — 21 files / 208 tests: US/Eastern bucketing with DST, aggregation (incl. GD grouping + deal integration + V3 event-truth demos/pipeline + range windows), activity/deal→company association (+ orphan-heal fallback), temperature classification, the canonical deal-stage engine (+ V3 active/parked/demo-completed predicates), stage-event extraction, demo-status segmentation, Deal Health, Forecast v1, integrity checks, the account-timeline builder, the embedding chunk composer, pod/team filters, call-quality mapping, spine row mappers, RBAC scope decision, agent detector/prompt/ranking, and the auth-domain rule. Never import `server-only` modules in tests; they throw under Vitest.
+- **Test coverage:** `tests/` covers pure logic only — 25 files / 245 tests: US/Eastern bucketing with DST (+ `periodBounds`), aggregation (incl. GD grouping + deal integration + V3 event-truth demos/pipeline + range windows), activity/deal→company association (+ orphan-heal fallback), temperature classification, the canonical deal-stage engine (+ V3 active/parked/demo-completed predicates), stage-event extraction, demo-status segmentation, Deal Health, Forecast v1, integrity checks, the account-timeline builder, the calling drill-down builder, the embedding chunk composer, pod/team filters, call-quality mapping, spine row mappers, RBAC scope decision, agent detector/prompt/ranking, and the auth-domain rule. Never import `server-only` modules in tests; they throw under Vitest.
 
 ## Architecture Overview
 
@@ -71,6 +71,12 @@ middleware.ts (auth gate: Supabase SSO + @spyne.ai domain)
        ↓
 app/page.tsx → components/Dashboard.tsx (rep table + Demo funnel + SDR/AE toggle)
 app/accounts/* (owned book by demo-status), app/admin/*, app/attention/*, app/api/rep/[ownerId]/*
+app/api/rep/[ownerId]/calling → lib/sync/calling.ts buildCallingDetail → components/CallingCard.tsx
+  (calling drill-down for ANY period or custom range via periodBounds — spine-read, NOT in the snapshot)
+app/api/intel/* (ask · themes · focus · radar) + app/api/agent/actions → lib/intel/* → the
+  Intelligence hub at /attention (IntelligenceHub: Ask · Focus · Radar · Themes · Board). Ask =
+  tool-loop RAG over sdr_embeddings via sdr_search_content_v2 (selectivity-aware; owner_id-scoped);
+  signals mined nightly into sdr_intel_signals (intel:signals, after embed:content)
 ```
 
 **Key constraint:** The app **never** calls HubSpot at request time. All outreach data is pre-computed and stored in Postgres. Call-quality is read live per request (separate, read-only Supabase tables). Sync runs outside Vercel (GitHub Actions) because it can exceed serverless timeouts.
@@ -104,7 +110,7 @@ HubSpot **deals** are a first-class object (Auto Pipeline `1001348836` only; eve
 
 ### Intelligence Layer (V3 P3)
 
-The Deal Funnel view (`/accounts`, `components/DealFunnel.tsx` ← `/api/deals`) shows the stage-wise pipeline over a **90-day deal window** (created-date; 30/90/180/All), with commitment-date columns (SDR `demo_scheduled_for_date`, AE `expected_contract_closure_date` — overdue burns red), **Forecast v1** (`lib/sync/forecast.ts` — resolved-cohort conversion, stage velocity, expected value; thin cohorts show null), and the funnel **ends at Contract Closed** (post-sale stages fold in). `/api/integrity` + `components/admin/IntegrityQueue.tsx` = the read-only data-integrity triage on /admin. The agent (`lib/agent/*`) generates grounded **Account Briefs** via a tool-using loop (`toolloop.ts` — the model must finish via the submit tool, whose args ARE the output) with `search_account_history` semantic recall over `sdr_embeddings` (pgvector; `embed-chunks.ts` decides what earns a vector; email bodies reply-chain-stripped; BANTIC from call-scoring rides the prompt). All jsonb `contains` on `company_ids` need `JSON.stringify([id])`; vector bulk loads: drop the HNSW index → `EMBED_WRITE_BATCH=96` → rebuild once.
+The Deal Funnel view (`/accounts`, `components/DealFunnel.tsx` ← `/api/deals`) shows the stage-wise pipeline over a **90-day deal window** (created-date; 30/90/180/All), with commitment-date columns (SDR `demo_scheduled_for_date`, AE `expected_contract_closure_date` — overdue burns red), **Forecast v1** (`lib/sync/forecast.ts` — resolved-cohort conversion, stage velocity, expected value; thin cohorts show null), and the funnel **ends at Contract Closed** (post-sale stages fold in). `/api/integrity` + `components/admin/IntegrityQueue.tsx` = the read-only data-integrity triage on /admin. The agent (`lib/agent/*`) generates grounded **Account Briefs** via a tool-using loop (`toolloop.ts` — the model must finish via the submit tool, whose args ARE the output) with `search_account_history` semantic recall over `sdr_embeddings` (pgvector; `embed-chunks.ts` decides what earns a vector; email bodies reply-chain-stripped; BANTIC from call-scoring rides the prompt). All jsonb `contains` on `company_ids` need `JSON.stringify([id])`; vector bulk loads: drop the IVFFlat index (`idx_sdr_emb_vec`) → `EMBED_WRITE_BATCH=96` → rebuild once + `analyze sdr_embeddings`.
 
 ### Funnel Truth: Stage-Event Ledger (V3)
 
@@ -238,7 +244,7 @@ The hot-account agent runs every 2 hours (GitHub Actions), reads-only on HubSpot
   - `lib/auth/` — auth domain rule
   - `lib/supabase/` — Supabase client (admin = server-only)
 - `config/` — dispositions, HubSpot portal, canonical deal stages (`deal-stages.ts`); `reps`/`team-structure` are the roster seed/fallback (the DB is authoritative)
-- `tests/` — Vitest, 21 files / 208 tests, pure logic only (full inventory in CLAUDE.md's Commands section)
+- `tests/` — Vitest, 25 files / 245 tests, pure logic only (full inventory in CLAUDE.md's Commands section)
 - `scripts/` — CLI scripts (sync, agent, verify-schema)
 - `supabase/` — SQL schema + RLS floor
 

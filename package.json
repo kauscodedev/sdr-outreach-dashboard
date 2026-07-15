@@ -21,6 +21,7 @@
     "agent:run": "tsx --conditions=react-server scripts/agent-run.ts",
     "agent:briefs": "tsx --conditions=react-server scripts/agent-briefs.ts",
     "embed:content": "tsx --conditions=react-server scripts/embed-content.ts",
+    "intel:signals": "tsx --conditions=react-server scripts/intel-signals.ts",
     "content:backfill": "tsx --conditions=react-server scripts/content-backfill.ts",
     "test": "vitest run"
   },

@@ -26,6 +26,43 @@ export interface ContentHit {
   similarity: number;
 }
 
+export interface FilteredHit extends ContentHit {
+  owner_id: string | null; // activity doer (rep)
+}
+
+/** Filters for the Ask search (server-fixed per request; the model only picks query text). */
+export interface SearchFilters {
+  accountId?: string | null;
+  ownerIds?: string[] | null; // activity doers
+  kind?: "call" | "email" | null;
+  afterMs?: number | null;
+  beforeMs?: number | null;
+}
+
+/** Filtered semantic search (Intelligence 2.0) via sdr_search_content_v2 — selectivity-aware
+ *  corpus strategy lives in the RPC (see the schema comments). Degrades to [] on any error. */
+export async function searchContentFiltered(query: string, f: SearchFilters, limit = 12): Promise<FilteredHit[]> {
+  const db = supabaseAdmin();
+  if (!db || !isConfigured()) return [];
+  try {
+    const [vec] = await embedTexts([query.slice(0, 500)]);
+    const { data, error } = await db.rpc("sdr_search_content_v2", {
+      p_query: vec,
+      p_account_id: f.accountId ?? null,
+      p_owner_ids: f.ownerIds?.length ? f.ownerIds : null,
+      p_kind: f.kind ?? null,
+      p_after_ms: f.afterMs ?? null,
+      p_before_ms: f.beforeMs ?? null,
+      p_limit: limit,
+    });
+    if (error) { console.warn("[embed] filtered search:", error.message); return []; }
+    return ((data ?? []) as FilteredHit[]).map((h) => ({ ...h, ts_ms: h.ts_ms == null ? null : Number(h.ts_ms) }));
+  } catch (e) {
+    console.warn("[embed] filtered search failed:", (e as Error).message);
+    return [];
+  }
+}
+
 /** Semantic search over indexed content. accountId scopes to one account; null = whole corpus. */
 export async function searchAccountContent(query: string, accountId: string | null, limit = 8): Promise<ContentHit[]> {
   const db = supabaseAdmin();
@@ -98,14 +135,19 @@ export async function indexNewContent(opts: { limit?: number } = {}): Promise<In
     }
 
     if (fresh.length) {
-      // Activity meta (account, timestamp, kind) for attribution.
-      const meta = new Map<string, { account_id: string | null; ts_ms: number | null; kind: string | null }>();
+      // Activity meta (account, doer, timestamp, kind) for attribution.
+      const meta = new Map<string, { account_id: string | null; owner_id: string | null; ts_ms: number | null; kind: string | null }>();
       for (let i = 0; i < fresh.length; i += 500) {
         const ids = fresh.slice(i, i + 500).map((f) => f.hs_id);
-        const { data: acts } = await db.from("sdr_activities").select("hs_id,type,ts_ms,company_ids").in("hs_id", ids);
+        const { data: acts } = await db.from("sdr_activities").select("hs_id,type,owner_id,ts_ms,company_ids").in("hs_id", ids);
         for (const a of acts ?? []) {
           const companies = Array.isArray(a.company_ids) ? a.company_ids.map(String) : [];
-          meta.set(String(a.hs_id), { account_id: companies[0] ?? null, ts_ms: a.ts_ms == null ? null : Number(a.ts_ms), kind: a.type ?? null });
+          meta.set(String(a.hs_id), {
+            account_id: companies[0] ?? null,
+            owner_id: a.owner_id == null ? null : String(a.owner_id),
+            ts_ms: a.ts_ms == null ? null : Number(a.ts_ms),
+            kind: a.type ?? null,
+          });
         }
       }
 
@@ -117,6 +159,7 @@ export async function indexNewContent(opts: { limit?: number } = {}): Promise<In
           const upserts = batch.map((b, j) => ({
             hs_id: b.hs_id,
             account_id: meta.get(b.hs_id)?.account_id ?? null,
+            owner_id: meta.get(b.hs_id)?.owner_id ?? null,
             ts_ms: meta.get(b.hs_id)?.ts_ms ?? null,
             kind: meta.get(b.hs_id)?.kind ?? null,
             chunk: b.chunk,

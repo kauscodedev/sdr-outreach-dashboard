@@ -21,18 +21,27 @@ the full **lead→demo→closure funnel** + **intelligence** on top:
   `worked_by_other` (only a different tracked rep did) / `untapped`; GD units flag `mixed_owner`.
 - **Monthly new-vs-existing** — per rep, rooftops/contacts worked this month + how many are brand new.
 - **Hot-account AI agent** — an OpenAI copilot that watches hot accounts and produces a grounded
-  "why hot + next step" task list at `/attention` (`lib/agent/*`). HubSpot read-only.
+  "why hot + next step" task list (`lib/agent/*`). HubSpot read-only.
+- **Intelligence 2.0 (`lib/intel/*`)** — the RAG layer as product: **Ask-TrackerAI** (on-demand
+  cited Q&A over the whole call/email corpus), a nightly **signals engine** (typed objections /
+  competitor mentions / buying signals / risks / commitments → `sdr_intel_signals`), **Themes**
+  (manager rollups), **Focus** (SDR daily list: watches + at-risk demos + revivals), **Deal
+  Radar** (AE risk-ranked pipeline), and **shared action tracking** (`sdr_agent_actions`).
 
 Surfaces: **Overview** (`/`, the rep table + Demo funnel + SDR/AE toggle), **Accounts** (`/accounts`,
 owned book by demo-status with GD→rooftop→contact drill, Deal Health/Temperature + last-activity),
-**Attention** (`/attention`), **Admin** (`/admin`). Shared top-nav in `components/AppNav.tsx`.
+**Intelligence** (`/attention` — a tabbed hub: Ask · Focus · Radar · Themes · Board, role-aware
+default tab, `?tab=` deep-links), **Admin** (`/admin`). Shared top-nav in `components/AppNav.tsx`.
 
 Read `README.md` for product definitions and setup. This file covers architecture and the
 non-obvious conventions that span multiple files. Other docs: `docs/AI-CRM-BLUEPRINT.md` is the V3
 master spec (SHIPPED through P3; P4 write-back/Slack digests pending); `AGENTS.md` is a **symlink to
-this file** (never edit it separately); `MISTRAL.md` is a legacy V2-era deep-dive on the Enhanced
+this file** (never edit it separately); `.github/copilot-instructions.md` is a condensed mirror of
+this file for Copilot — **reconcile it whenever conventions here change** (it has drifted before);
+`MISTRAL.md` is a legacy V2-era deep-dive on the Enhanced
 Attention Board whose inline code samples include unshipped aspirational features — don't treat it
-as current state; `docs/superpowers/*` are historical phase-1/2/3 plans and specs.
+as current state; `docs/superpowers/*` are phase plans + dated feature design specs (each dated
+spec is the design record for its feature; the phase-1/2/3 ones are historical).
 
 ## Commands
 
@@ -53,8 +62,9 @@ as current state; `docs/superpowers/*` are historical phase-1/2/3 plans and spec
 | `npm run agent:run` | One hot-account agent pass (OpenAI reasoning → `sdr_agent_watches`); needs `OPENAI_API_KEY` |
 | `npm run agent:briefs` | Refresh grounded Account Briefs for watched accounts (timeline + content + deals → `sdr_agent_briefs`); needs `OPENAI_API_KEY`; runs as the 2nd step of `spine-agent.yml` |
 | `npm run embed:content` | Index new `sdr_activity_content` rows into `sdr_embeddings` (pgvector; idempotent, new rows only); needs `OPENAI_API_KEY`; runs nightly after `content:backfill` in `spine-reconcile.yml` |
+| `npm run intel:signals` | Mine typed signals (objections/competitors/buying signals/risks/commitments/timing) from new content → `sdr_intel_signals`; idempotent via the `sdr_intel_scans` ledger, newest content first, cap `INTEL_SCAN_CAP` (default 2500/run); needs `OPENAI_API_KEY`; runs nightly after `embed:content` |
 
-All non-`dev`/`build`/`lint`/`test` scripts run via `tsx --conditions=react-server` — required so
+All non-`dev`/`build`/`lint`/`test`/`start` scripts run via `tsx --conditions=react-server` — required so
 the `server-only` guard in `lib/supabase/admin.ts` resolves to a no-op under plain Node. Scripts
 load env from `.env` then `.env.local` (so put local secrets, incl. `OPENAI_API_KEY`, in `.env.local`).
 
@@ -77,8 +87,10 @@ mappers (`spine-rows.test.ts`), the RBAC scope decision (`access.test.ts`), the 
 (`agent-ranking.test.ts`), the auth-domain rule (`auth-domain.test.ts`), the pod/team filter
 options (`team-filters.test.ts`), the account-timeline builder (`account-timeline.test.ts`),
 Forecast v1 (`forecast.test.ts`), the integrity checks (`integrity.test.ts`), the embedding
-chunk composer (`embed-chunks.test.ts`), and the calling drill-down builder (`calling.test.ts`)
-— 22 files / 224 tests in all. Never
+chunk composer (`embed-chunks.test.ts`), the calling drill-down builder (`calling.test.ts`),
+and the Intelligence 2.0 pure logic — signal prompt/coercion/rescan (`intel-signals.test.ts`),
+the Focus merge incl. revival-window edges (`intel-focus.test.ts`), and the Radar
+ranking incl. the zombie sink (`intel-radar.test.ts`) — 25 files / 245 tests in all. Never
 import a `server-only`-guarded module (`lib/supabase/admin.ts`,
 `lib/callquality/fetch.ts`, `lib/agent/openai|store|runner.ts`) from a test — it throws under vitest.
 
@@ -122,7 +134,8 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
   app/page.tsx   resolveViewer(email) + snapshot (units stripped)  → components/Dashboard.tsx (rep table, Demo funnel, SDR/AE toggle)
   app/accounts   resolveViewer + snapshot → components/Accounts.tsx  (owned book by demo-status; lazy per-rep units via /book)
   app/admin      control center: add/update users (email→owner), roster + soft-delete, manage pods/managers, roles, sync health   (admin only)
-  app/attention  hot-account task list (AttentionBoard / AttentionBoardEnhanced) ← sdr_agent_watches
+  app/attention  the Intelligence hub (IntelligenceHub: Ask · Focus · Radar · Themes · Board) ←
+                 sdr_agent_watches/briefs SSR for the Board tab; other tabs fetch /api/intel/*
   app/api/rep/[ownerId]/book|calls   lazy per-rep drill-downs   ·   app/api/agent/watches
   app/api/rep/[ownerId]/calling   calling drill-down: ?period=<PeriodKey> or ?from&to → spine read
                           (periodBounds in buckets.ts inverts the period to a [from,to) window) →
@@ -152,6 +165,30 @@ scripts/spine-{backfill,delta,reconcile}.ts · reaggregate.ts   (GitHub Actions 
                           with a deterministic suggested action; rendered by
                           components/admin/IntegrityQueue.tsx on /admin
   app/api/sync/delta   CRON_SECRET-gated alt trigger for runDelta
+
+  Intelligence 2.0 (lib/intel/* — the RAG layer's product surface; hub at /attention):
+  app/api/intel/ask      POST — Ask-TrackerAI: tool loop (find_account / account_overview /
+                         search_content via sdr_search_content_v2) → submit_answer whose [S#]
+                         tags the SERVER expands into citations (the model never reproduces
+                         activity ids); maxDuration 60 / internal 45s deadline; 40 asks/user/24h
+                         rate-limited + audited via sdr_intel_asks (RLS: service-role only).
+                         Orchestration in lib/intel/ask.ts; UI components/AskPanel.tsx
+  app/api/intel/themes   GET — signal rollups via the sdr_intel_themes/_theme_trend RPCs +
+                         verbatim examples (lib/intel/themes.ts → components/ThemesView.tsx)
+  app/api/intel/focus    GET ?rep= — SDR daily list: watches + at-risk demos + revival
+                         candidates (pure buildFocus in lib/intel/focus.ts, snapshot units +
+                         sdr_agent_actions + signals → components/FocusList.tsx)
+  app/api/intel/radar    GET ?scope= — active deals ranked by voiced risk + zombie sink +
+                         health + staleness (pure buildRadar in lib/intel/radar.ts →
+                         components/DealRadar.tsx)
+  app/api/agent/actions  GET/POST — SHARED action tracking (sdr_agent_actions; replaces the
+                         localStorage-only lib/agent/actions.ts via lib/agent/actions-client.ts,
+                         which keeps localStorage as an optimistic cache + one-time import)
+
+scripts/intel-signals.ts  (spine-reconcile.yml, nightly after embed:content)
+  └─ lib/intel/signals-run.ts  runSignalScan: new/grown content (composeChunk, newest first,
+       cap 2500) → 8-chunk completeJSON batches → typed rows in sdr_intel_signals + the
+       sdr_intel_scans ledger (pure prompt/coercion in lib/intel/signals.ts)
 
 scripts/agent-run.ts  (.github/workflows/spine-agent.yml, every 2 h)
   └─ lib/agent/runner.ts  runAgent: hot accounts (snapshot) → detect.ts → OpenAI (openai.ts) → sdr_agent_watches/notes
@@ -282,7 +319,9 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   login's owner id. **Focus model, not confidentiality** — everyone keeps the "All reps" toggle;
   `resolveViewer` never throws (degrades to org-wide). Admin add-user: **Role** (User/Manager/Admin →
   `sdr_roles`) and **Type** (SDR/AE/access-only → `sdr_roster`) are INDEPENDENT — access-only writes
-  no roster row (fixes admins being mislabeled reps).
+  no roster row (fixes admins being mislabeled reps). The schema also still contains
+  `sdr_teams`/`sdr_team_members` — HubSpot-teams-era leftovers that nothing reads; the live org
+  model is `sdr_pods`/`sdr_managers`/`sdr_roster` only.
 - **Snapshot loader must use a static `import()`, not `fs`** (`lib/snapshot.ts`) — a runtime path is
   missed by Vercel output-file-tracing.
 - **The 10k Search ceiling** — legacy full pull slices into 7-day windows; delta pulls cut each
@@ -411,9 +450,10 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   agentic when the account is indexed (search_account_history over the WHOLE history, 5-search
   budget) and single-shot otherwise. Model `OPENAI_MODEL` (default `gpt-4o-mini`);
   `OPENAI_EMBED_MODEL` (default `text-embedding-3-small`, 1536-dim — must match `vector(1536)`).
-- **Vector bulk-load procedure (learned the hard way):** with the HNSW index in place, vector
-  inserts pay graph maintenance that grows with the index — writes started tripping
-  `statement_timeout` past ~30k nodes even at 8 rows/statement. For bulk loads: drop
+- **Vector bulk-load procedure (learned the hard way):** the index is **IVFFlat**
+  (`idx_sdr_emb_vec`, lists=100; the original HNSW index paid per-insert graph maintenance that
+  grew with the index — writes started tripping `statement_timeout` past ~30k nodes even at
+  8 rows/statement, which is why it was replaced). For bulk loads: drop
   `idx_sdr_emb_vec`, run `EMBED_WRITE_BATCH=96 npm run embed:content` (plain heap inserts, ~10×),
   then rebuild the index ONCE **and `analyze sdr_embeddings`** (an index build doesn't refresh
   stats; stale stats after a bulk load kept the planner on seq scans). The Supabase dashboard's
@@ -431,6 +471,14 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   Direct-connection testing hides this (plain Params inline fine, 12ms) — always verify through
   the PostgREST path. The plpgsql branches also keep scoped search EXACT (btree account index +
   sort) instead of ivfflat KNN-then-filter, which starves small accounts of results.
+- **`sdr_search_content_v2` (Ask filters) is SELECTIVITY-AWARE — keep it that way.** KNN
+  over-fetch + post-filter genuinely starves: a "pricing" query's 180 nearest neighbors were
+  11/12 EMAILS, so `kind='call'+last-30d` returned 0 hits despite 20k matching rows (observed
+  live 2026-07-15). The corpus branch therefore counts the filtered rows first (vector-free,
+  cheap): ≤4k → EXACT filtered sort (~0.3s); dense → probes=5 KNN with 720-row over-fetch
+  (~3s, under the 8s role timeout); no filters → plain KNN. VOLATILE (sets ivfflat.probes,
+  txn-local). v1 stays untouched — briefs depend on it. `sdr_embeddings.owner_id` (activity
+  DOER) powers rep scoping; `indexNewContent` writes it, backfilled 2026-07-15.
   Grounding fed to models: email bodies are pulled (`hs_email_text` → `email_body`, reply chains
   stripped by `cleanEmailBody`) and BANTIC analysis from the call-scoring tables rides the brief
   prompt (`buildBriefUser`).
@@ -439,9 +487,22 @@ Deal Health, stage, at-risk/revive flags) and `last_activity` (date/type/outcome
   dispositions to labels (models can't read GUIDs), and every jsonb `contains` on `company_ids`
   needs the JSON-string form (`JSON.stringify([id])`) — the raw-array form 400s and graceful
   catches silently returned [].
-- **Surface:** `/attention` renders **`AttentionBoardEnhanced`** (smart ranking via `lib/agent/ranking`
-  + action tracking; the simpler `AttentionBoard` is the earlier version) — priority/rep filters,
-  HubSpot backlinks + `/api/agent/watches`.
+- **Surface:** `/attention` is the **Intelligence hub** (`components/IntelligenceHub.tsx` — Ask ·
+  Focus · Radar · Themes · Board tabs, lazily mounted and kept alive across hops; role-aware
+  default: AE → Radar, rep → Focus, else Ask). The Board tab is **`AttentionBoardEnhanced`**
+  (smart ranking via `lib/agent/ranking`; the simpler `AttentionBoard` is dead legacy) —
+  priority/rep filters, HubSpot backlinks + `/api/agent/watches`. Action tracking now lives in
+  **`sdr_agent_actions`** via `lib/agent/actions-client.ts` (same call surface as the legacy
+  `lib/agent/actions.ts`; localStorage stays as an optimistic cache + BroadcastChannel, with a
+  one-time legacy import on first board mount — delete the old module after a release).
+- **Intelligence 2.0 conventions (don't regress):** Ask citations are SERVER-expanded — the
+  model only writes `[S#]` tags; the tag→hit map lives in `lib/intel/ask.ts` (small models copy
+  2-char tags reliably but mangle 12-digit activity ids). Request filters (date/kind/rep scope)
+  are fixed server-side on every search — the model only picks query text + an account pin. The
+  signals scan ledger (`sdr_intel_scans`) records signal-LESS rows too (an anti-join on signals
+  alone would rescan them forever); rescan only on >1.4× content growth (late transcripts).
+  Radar sinks "zombie" deals (no account activity >90d) below actionables — ~3.9k stale-active
+  deals would otherwise bury the list.
 - **Activation (one-time):** apply `supabase/sdr_schema.sql` (adds `sdr_activity_content`,
   `sdr_agent_watches`, `sdr_agent_notes`, and the `sdr_save_snapshot` RPC) + set the `OPENAI_API_KEY`
   secret. The `spine-agent` cron then runs every 2 h.
